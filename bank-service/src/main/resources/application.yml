@@ -1,0 +1,17 @@
+# One app, two banks: start it with BANK_CODE=BANKA or BANK_CODE=BANKB.
+bank:
+  code: ${BANK_CODE:BANKA}
+
+server:
+  port: ${PORT:8081}
+
+spring:
+  application:
+    name: bank-service
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5433/banka}
+    username: ${DB_USER:payswitch}
+    password: ${DB_PASSWORD:payswitch}
+  flyway:
+    # Shared schema for every bank, plus seed customers for THIS bank only.
+    locations: classpath:db/migration,classpath:db/seed/${bank.code}

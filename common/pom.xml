@@ -12,4 +12,13 @@
 
     <artifactId>common</artifactId>
     <name>PaySwitch common (shared DTOs)</name>
+
+    <!-- Plain records and enums shared by PSP, Switch and Bank. No framework on purpose. -->
+    <dependencies>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
 </project>
