@@ -16,6 +16,7 @@
         <module>common</module>
         <module>ledger-core</module>
         <module>bank-service</module>
+        <module>switch-service</module>
     </modules>
 
     <properties>
