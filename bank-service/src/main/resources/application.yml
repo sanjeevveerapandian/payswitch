@@ -14,4 +14,11 @@ spring:
     password: ${DB_PASSWORD:payswitch}
   flyway:
     # Shared schema for every bank, plus seed customers for THIS bank only.
-    locations: classpath:db/migration,classpath:db/seed/${bank.code}
+    locations: classpath:db/bank/migration,classpath:db/bank/seed/${bank.code}
+
+# Only the health endpoint is exposed: GET /actuator/health
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health

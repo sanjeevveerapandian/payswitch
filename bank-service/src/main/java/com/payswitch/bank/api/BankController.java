@@ -3,7 +3,8 @@ package com.payswitch.bank.api;
 import com.payswitch.bank.service.BankOperationsService;
 import com.payswitch.common.bank.BalanceResponse;
 import com.payswitch.common.bank.BankResponse;
-import com.payswitch.common.bank.BankTxnRequest;
+import com.payswitch.common.bank.CreditRequest;
+import com.payswitch.common.bank.DebitRequest;
 import com.payswitch.common.bank.OpType;
 import com.payswitch.common.bank.ReverseRequest;
 import com.payswitch.common.bank.StatusResponse;
@@ -31,12 +32,12 @@ public class BankController {
     }
 
     @PostMapping("/debit")
-    public BankResponse debit(@RequestBody BankTxnRequest request) {
+    public BankResponse debit(@RequestBody DebitRequest request) {
         return bank.debit(request);
     }
 
     @PostMapping("/credit")
-    public BankResponse credit(@RequestBody BankTxnRequest request) {
+    public BankResponse credit(@RequestBody CreditRequest request) {
         return bank.credit(request);
     }
 

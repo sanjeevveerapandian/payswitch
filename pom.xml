@@ -17,6 +17,8 @@
         <module>ledger-core</module>
         <module>bank-service</module>
         <module>switch-service</module>
+        <module>psp-service</module>
+        <module>e2e-tests</module>
     </modules>
 
     <properties>
@@ -39,6 +41,21 @@
             <dependency>
                 <groupId>com.payswitch</groupId>
                 <artifactId>ledger-core</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.payswitch</groupId>
+                <artifactId>bank-service</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.payswitch</groupId>
+                <artifactId>switch-service</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.payswitch</groupId>
+                <artifactId>psp-service</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <!-- Listed first, so this JUnit version wins over the one in Spring Boot's list. -->
@@ -88,6 +105,10 @@
                          Each runnable service turns it back on in its own pom. -->
                     <configuration>
                         <skip>true</skip>
+                        <!-- The runnable "fat" jar is built NEXT TO the normal jar, as
+                             name-exec.jar. The normal jar stays a plain library, so the
+                             e2e-tests module can depend on the services. -->
+                        <classifier>exec</classifier>
                     </configuration>
                 </plugin>
             </plugins>

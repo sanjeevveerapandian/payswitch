@@ -4,7 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 
 import com.payswitch.common.bank.BankResponse;
 import com.payswitch.common.bank.BankResult;
-import com.payswitch.common.bank.BankTxnRequest;
+import com.payswitch.common.bank.DebitRequest;
 import com.payswitch.common.bank.DeclineReason;
 import java.util.List;
 import org.junit.jupiter.api.Test;
@@ -22,7 +22,7 @@ class ConcurrencyTest extends BankIntegrationTest {
         long settlementBefore = settlement();
 
         List<BankResponse> answers = IdempotencyTest.runConcurrently(100,
-                i -> bank.debit(new BankTxnRequest(newTxnId(), ravi, 10_000)));
+                i -> bank.debit(new DebitRequest(newTxnId(), ravi, 10_000)));
 
         long succeeded = answers.stream().filter(a -> a.result() == BankResult.SUCCESS).count();
         long declined = answers.stream().filter(a -> a.reason() == DeclineReason.INSUFFICIENT_FUNDS).count();

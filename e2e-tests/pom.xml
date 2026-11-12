@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>com.payswitch</groupId>
+        <artifactId>payswitch-parent</artifactId>
+        <version>0.1.0-SNAPSHOT</version>
+    </parent>
+
+    <artifactId>e2e-tests</artifactId>
+    <name>PaySwitch end-to-end tests</name>
+
+    <!-- Tests only, no production code. Starts PSP, Switch, Bank A and Bank B together
+         and sends real HTTP payments through all of them. -->
+    <dependencies>
+        <dependency>
+            <groupId>com.payswitch</groupId>
+            <artifactId>bank-service</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>com.payswitch</groupId>
+            <artifactId>switch-service</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>com.payswitch</groupId>
+            <artifactId>psp-service</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>postgresql</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+</project>

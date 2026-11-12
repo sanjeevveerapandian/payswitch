@@ -1,0 +1,20 @@
+server:
+  port: ${PORT:8080}
+
+spring:
+  application:
+    name: psp-service
+
+psp:
+  switch-url: ${SWITCH_URL:http://localhost:8083}
+  http:
+    connect-timeout: 2s
+    # Longer than the switch's own worst case: it may make up to 3 bank calls
+    # (debit, credit, reverse) of up to 5s each before it can answer us.
+    read-timeout: 20s
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health

@@ -20,7 +20,16 @@
             <artifactId>common</artifactId>
         </dependency>
 
-        <!-- Spring JDBC: JdbcClient, transactions, connection pool. No web layer until Phase 4. -->
+        <!-- HTTP + JSON: our own API, and RestClient for calling the banks -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-web</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+        <!-- Spring JDBC: JdbcClient, transactions, connection pool -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-jdbc</artifactId>

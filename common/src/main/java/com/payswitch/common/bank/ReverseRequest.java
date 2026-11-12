@@ -1,6 +1,8 @@
 package com.payswitch.common.bank;
 
-/** Body of POST /reverse: undo the DEBIT with this txnId. */
+import com.payswitch.common.Validation;
+
+/** Switch -> payer's bank: undo the DEBIT with this txnId. Body of POST /reverse. */
 public record ReverseRequest(String txnId) {
 
     public ReverseRequest {

@@ -29,6 +29,11 @@
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-web</artifactId>
         </dependency>
+        <!-- /actuator/health: lets Docker ask "are you ready?" before starting whoever depends on us -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
         <!-- Spring JDBC: JdbcClient, transactions, Hikari connection pool -->
         <dependency>
             <groupId>org.springframework.boot</groupId>

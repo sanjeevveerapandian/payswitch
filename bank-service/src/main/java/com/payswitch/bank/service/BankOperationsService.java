@@ -7,7 +7,8 @@ import com.payswitch.bank.db.ProcessedRequestRepository;
 import com.payswitch.common.bank.BalanceResponse;
 import com.payswitch.common.bank.BankResponse;
 import com.payswitch.common.bank.BankResult;
-import com.payswitch.common.bank.BankTxnRequest;
+import com.payswitch.common.bank.CreditRequest;
+import com.payswitch.common.bank.DebitRequest;
 import com.payswitch.common.bank.DeclineReason;
 import com.payswitch.common.bank.OpType;
 import com.payswitch.common.bank.ReverseRequest;
@@ -50,7 +51,7 @@ public class BankOperationsService {
 
     /** Customer -> SWITCH_SETTLEMENT. Ravi's bank takes Rs 200 from Ravi. */
     @Transactional
-    public BankResponse debit(BankTxnRequest request) {
+    public BankResponse debit(DebitRequest request) {
         return once(request.txnId(), OpType.DEBIT, () -> {
             Optional<AccountRow> customer = accounts.findByVpa(request.vpa());
             if (customer.isEmpty()) {
@@ -72,7 +73,7 @@ public class BankOperationsService {
 
     /** SWITCH_SETTLEMENT -> customer. Anu's bank gives Anu Rs 200. */
     @Transactional
-    public BankResponse credit(BankTxnRequest request) {
+    public BankResponse credit(CreditRequest request) {
         return once(request.txnId(), OpType.CREDIT, () -> {
             Optional<AccountRow> customer = accounts.findByVpa(request.vpa());
             if (customer.isEmpty()) {

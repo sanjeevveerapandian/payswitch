@@ -4,7 +4,8 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 
 import com.payswitch.common.bank.BankResponse;
 import com.payswitch.common.bank.BankResult;
-import com.payswitch.common.bank.BankTxnRequest;
+import com.payswitch.common.bank.CreditRequest;
+import com.payswitch.common.bank.DebitRequest;
 import com.payswitch.common.bank.DeclineReason;
 import com.payswitch.common.bank.OpType;
 import com.payswitch.common.bank.ReverseRequest;
@@ -22,7 +23,7 @@ class IdempotencyTest extends BankIntegrationTest {
     @Test
     void sameDebitSentFiveTimesMovesMoneyOnce() {
         String ravi = newCustomer(500_000);
-        BankTxnRequest debit = new BankTxnRequest(newTxnId(), ravi, 20_000);
+        DebitRequest debit = new DebitRequest(newTxnId(), ravi, 20_000);
 
         BankResponse first = bank.debit(debit);
         for (int i = 0; i < 4; i++) {
@@ -36,7 +37,7 @@ class IdempotencyTest extends BankIntegrationTest {
     @Test
     void sameDebitSentFiveTimesAtTheSameMomentMovesMoneyOnce() throws Exception {
         String ravi = newCustomer(500_000);
-        BankTxnRequest debit = new BankTxnRequest(newTxnId(), ravi, 20_000);
+        DebitRequest debit = new DebitRequest(newTxnId(), ravi, 20_000);
 
         List<BankResponse> answers = runConcurrently(5, i -> bank.debit(debit));
 
@@ -48,10 +49,10 @@ class IdempotencyTest extends BankIntegrationTest {
     @Test
     void declinedDebitStaysDeclinedOnRetryEvenAfterMoneyArrives() {
         String ravi = newCustomer(10_000);
-        BankTxnRequest debit = new BankTxnRequest(newTxnId(), ravi, 20_000);
+        DebitRequest debit = new DebitRequest(newTxnId(), ravi, 20_000);
         assertEquals(BankResult.DECLINED, bank.debit(debit).result());
 
-        bank.credit(new BankTxnRequest(newTxnId(), ravi, 50_000)); // Ravi now has enough
+        bank.credit(new CreditRequest(newTxnId(), ravi, 50_000)); // Ravi now has enough
 
         // Same txnId = same question = same answer. A new attempt must use a new txnId.
         assertEquals(DeclineReason.INSUFFICIENT_FUNDS, bank.debit(debit).reason());
@@ -62,7 +63,7 @@ class IdempotencyTest extends BankIntegrationTest {
     void reversingTwiceUndoesOnce() {
         String ravi = newCustomer(500_000);
         String txn = newTxnId();
-        bank.debit(new BankTxnRequest(txn, ravi, 20_000));
+        bank.debit(new DebitRequest(txn, ravi, 20_000));
 
         BankResponse first = bank.reverse(new ReverseRequest(txn));
         BankResponse second = bank.reverse(new ReverseRequest(txn));
@@ -89,7 +90,7 @@ class IdempotencyTest extends BankIntegrationTest {
         String txn = newTxnId();
         bank.reverse(new ReverseRequest(txn)); // the reversal overtook the debit on the network
 
-        BankResponse lateDebit = bank.debit(new BankTxnRequest(txn, ravi, 20_000));
+        BankResponse lateDebit = bank.debit(new DebitRequest(txn, ravi, 20_000));
 
         assertEquals(DeclineReason.ALREADY_REVERSED, lateDebit.reason());
         assertEquals(500_000, balance(ravi)); // no money stuck in settlement
@@ -101,8 +102,8 @@ class IdempotencyTest extends BankIntegrationTest {
         String ravi = newCustomer(10_000);
         String ok = newTxnId();
         String bad = newTxnId();
-        bank.debit(new BankTxnRequest(ok, ravi, 5_000));
-        bank.debit(new BankTxnRequest(bad, ravi, 50_000));
+        bank.debit(new DebitRequest(ok, ravi, 5_000));
+        bank.debit(new DebitRequest(bad, ravi, 50_000));
 
         assertEquals(TxnStatus.SUCCESS, bank.status(ok, OpType.DEBIT).status());
         assertEquals(TxnStatus.FAILED, bank.status(bad, OpType.DEBIT).status());

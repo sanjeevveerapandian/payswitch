@@ -1,31 +1,110 @@
-# Local databases only. Each bank gets its own Postgres, like two real banks would.
-#   Bank A -> localhost:5433/banka
-#   Bank B -> localhost:5434/bankb
+# The whole system with one command:   docker compose up --build
+#
+#   you -> psp :8080 -> switch :8083 -> bank-a :8081
+#                                    -> bank-b :8082
+#                       all three use -> postgres (databases: switch, banka, bankb)
+#
+# Inside this Compose network, services reach each other BY SERVICE NAME:
+# the switch calls http://bank-a:8081, not localhost.
+
+# Both banks are built from the same Dockerfile; only their environment differs.
+x-bank-build: &bank-build
+  context: .
+  dockerfile: bank-service/Dockerfile
+
+# "Healthy" = Spring Boot's /actuator/health answers 200 (app started AND database reachable).
+x-health-timing: &health-timing
+  interval: 5s
+  timeout: 3s
+  retries: 30
+  start_period: 20s
+
 services:
-  postgres-banka:
+  postgres:
     image: postgres:16-alpine
     environment:
-      POSTGRES_DB: banka
       POSTGRES_USER: payswitch
       POSTGRES_PASSWORD: payswitch
+    volumes:
+      # Creates the databases banka, bankb and switch on first start.
+      - ./docker/postgres/init-databases.sql:/docker-entrypoint-initdb.d/init-databases.sql:ro
     ports:
-      - "5433:5432"
+      - "5433:5432"          # for running a service from your IDE against this database
+    healthcheck:
+      # -h localhost: only passes once the real server is up, not during the init script.
+      test: ["CMD-SHELL", "pg_isready -h localhost -U payswitch"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
 
-  postgres-bankb:
-    image: postgres:16-alpine
+  bank-a:
+    build: *bank-build
+    image: payswitch/bank-service
     environment:
-      POSTGRES_DB: bankb
-      POSTGRES_USER: payswitch
-      POSTGRES_PASSWORD: payswitch
+      BANK_CODE: BANKA
+      PORT: 8081
+      DB_URL: jdbc:postgresql://postgres:5432/banka
     ports:
-      - "5434:5432"
+      - "8081:8081"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:8081/actuator/health || exit 1"]
+      <<: *health-timing
 
-  # The switch keeps its own record of every payment: localhost:5435/switch
-  postgres-switch:
-    image: postgres:16-alpine
+  bank-b:
+    build: *bank-build
+    image: payswitch/bank-service
     environment:
-      POSTGRES_DB: switch
-      POSTGRES_USER: payswitch
-      POSTGRES_PASSWORD: payswitch
+      BANK_CODE: BANKB
+      PORT: 8082
+      DB_URL: jdbc:postgresql://postgres:5432/bankb
     ports:
-      - "5435:5432"
+      - "8082:8082"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:8082/actuator/health || exit 1"]
+      <<: *health-timing
+
+  switch:
+    build:
+      context: .
+      dockerfile: switch-service/Dockerfile
+    image: payswitch/switch-service
+    environment:
+      PORT: 8083
+      DB_URL: jdbc:postgresql://postgres:5432/switch
+      BANKA_URL: http://bank-a:8081
+      BANKB_URL: http://bank-b:8082
+    ports:
+      - "8083:8083"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      bank-a:
+        condition: service_healthy
+      bank-b:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:8083/actuator/health || exit 1"]
+      <<: *health-timing
+
+  psp:
+    build:
+      context: .
+      dockerfile: psp-service/Dockerfile
+    image: payswitch/psp-service
+    environment:
+      PORT: 8080
+      SWITCH_URL: http://switch:8083
+    ports:
+      - "8080:8080"
+    depends_on:
+      switch:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:8080/actuator/health || exit 1"]
+      <<: *health-timing

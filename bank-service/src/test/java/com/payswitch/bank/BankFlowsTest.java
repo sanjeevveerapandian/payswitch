@@ -5,7 +5,8 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 
 import com.payswitch.common.bank.BankResponse;
 import com.payswitch.common.bank.BankResult;
-import com.payswitch.common.bank.BankTxnRequest;
+import com.payswitch.common.bank.CreditRequest;
+import com.payswitch.common.bank.DebitRequest;
 import com.payswitch.common.bank.DeclineReason;
 import com.payswitch.common.bank.ReverseRequest;
 import org.junit.jupiter.api.Test;
@@ -18,7 +19,7 @@ class BankFlowsTest extends BankIntegrationTest {
         String ravi = newCustomer(500_000);           // Rs 5,000
         long settlementBefore = settlement();
 
-        BankResponse r = bank.debit(new BankTxnRequest(newTxnId(), ravi, 20_000)); // Rs 200
+        BankResponse r = bank.debit(new DebitRequest(newTxnId(), ravi, 20_000)); // Rs 200
 
         assertEquals(BankResult.SUCCESS, r.result());
         assertNull(r.reason());
@@ -31,7 +32,7 @@ class BankFlowsTest extends BankIntegrationTest {
         String anu = newCustomer(0);
         long settlementBefore = settlement();
 
-        BankResponse r = bank.credit(new BankTxnRequest(newTxnId(), anu, 20_000));
+        BankResponse r = bank.credit(new CreditRequest(newTxnId(), anu, 20_000));
 
         assertEquals(BankResult.SUCCESS, r.result());
         assertEquals(20_000, balance(anu));
@@ -43,7 +44,7 @@ class BankFlowsTest extends BankIntegrationTest {
         String ravi = newCustomer(500_000);
         long settlementBefore = settlement();
         String txn = newTxnId();
-        bank.debit(new BankTxnRequest(txn, ravi, 20_000));
+        bank.debit(new DebitRequest(txn, ravi, 20_000));
 
         BankResponse r = bank.reverse(new ReverseRequest(txn));
 
@@ -59,7 +60,7 @@ class BankFlowsTest extends BankIntegrationTest {
         long settlementBefore = settlement();
         String txn = newTxnId();
 
-        BankResponse r = bank.debit(new BankTxnRequest(txn, ravi, 20_000));
+        BankResponse r = bank.debit(new DebitRequest(txn, ravi, 20_000));
 
         assertEquals(BankResult.DECLINED, r.result());
         assertEquals(DeclineReason.INSUFFICIENT_FUNDS, r.reason());
@@ -70,8 +71,8 @@ class BankFlowsTest extends BankIntegrationTest {
 
     @Test
     void unknownVpaIsDeclined() {
-        BankResponse debit = bank.debit(new BankTxnRequest(newTxnId(), "nobody@banka", 20_000));
-        BankResponse credit = bank.credit(new BankTxnRequest(newTxnId(), "nobody@banka", 20_000));
+        BankResponse debit = bank.debit(new DebitRequest(newTxnId(), "nobody@banka", 20_000));
+        BankResponse credit = bank.credit(new CreditRequest(newTxnId(), "nobody@banka", 20_000));
 
         assertEquals(DeclineReason.UNKNOWN_VPA, debit.reason());
         assertEquals(DeclineReason.UNKNOWN_VPA, credit.reason());
@@ -81,7 +82,7 @@ class BankFlowsTest extends BankIntegrationTest {
     void reversingADeclinedDebitIsDeclined() {
         String ravi = newCustomer(10_000);
         String txn = newTxnId();
-        bank.debit(new BankTxnRequest(txn, ravi, 20_000)); // declined: not enough money
+        bank.debit(new DebitRequest(txn, ravi, 20_000)); // declined: not enough money
 
         BankResponse r = bank.reverse(new ReverseRequest(txn));
 

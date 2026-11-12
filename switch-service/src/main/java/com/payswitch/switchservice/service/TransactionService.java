@@ -1,6 +1,6 @@
 package com.payswitch.switchservice.service;
 
-import com.payswitch.common.bank.BankTxnRequest;
+import com.payswitch.common.PaymentLimits;
 import com.payswitch.switchservice.db.TransactionRepository;
 import com.payswitch.switchservice.db.TxnEventRepository;
 import com.payswitch.switchservice.domain.Txn;
@@ -51,9 +51,9 @@ public class TransactionService {
         if (txnId == null || txnId.isBlank() || txnId.length() > 64) {
             throw new IllegalArgumentException("txnId must be 1 to 64 characters");
         }
-        if (amount <= 0 || amount > BankTxnRequest.MAX_AMOUNT_PAISE) {
+        if (amount <= 0 || amount > PaymentLimits.MAX_AMOUNT_PAISE) {
             throw new IllegalArgumentException("amount must be between 1 and "
-                    + BankTxnRequest.MAX_AMOUNT_PAISE + " paise, got " + amount);
+                    + PaymentLimits.MAX_AMOUNT_PAISE + " paise, got " + amount);
         }
         Vpa payer = Vpa.parse(payerVpa);
         Vpa payee = Vpa.parse(payeeVpa);

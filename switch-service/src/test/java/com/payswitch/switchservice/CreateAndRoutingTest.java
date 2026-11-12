@@ -4,7 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
-import com.payswitch.common.bank.BankTxnRequest;
+import com.payswitch.common.PaymentLimits;
 import com.payswitch.switchservice.domain.Txn;
 import com.payswitch.switchservice.domain.TxnEvent;
 import com.payswitch.switchservice.domain.TxnState;
@@ -101,7 +101,7 @@ class CreateAndRoutingTest extends SwitchIntegrationTest {
         assertThrows(IllegalArgumentException.class,
                 () -> service.create(newTxnId(), "ravi@banka", "anu@bankb", 0));
         assertThrows(IllegalArgumentException.class,
-                () -> service.create(newTxnId(), "ravi@banka", "anu@bankb", BankTxnRequest.MAX_AMOUNT_PAISE + 1));
+                () -> service.create(newTxnId(), "ravi@banka", "anu@bankb", PaymentLimits.MAX_AMOUNT_PAISE + 1));
         assertThrows(IllegalArgumentException.class,
                 () -> service.create(newTxnId(), "ravi@banka", "RAVI@banka", 20_000));
     }

@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.net.URI;
+import java.time.Duration;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -13,7 +14,8 @@ import org.junit.jupiter.params.provider.ValueSource;
 
 class VpaAndRouterTest {
 
-    private final BankRouter router = new BankRouter(new SwitchProperties(Map.of(
+    private final BankRouter router = new BankRouter(new SwitchProperties(
+            new SwitchProperties.Http(Duration.ofSeconds(2), Duration.ofSeconds(5)), Map.of(
             "banka", new BankRoute("BANKA", URI.create("http://localhost:8081")),
             "bankb", new BankRoute("BANKB", URI.create("http://localhost:8082")))));
 

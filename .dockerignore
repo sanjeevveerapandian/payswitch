@@ -1,0 +1,10 @@
+# Send only what the builds need. Everything else (git history, IDE files, build output) stays out.
+*
+!pom.xml
+!common
+!ledger-core
+!bank-service
+!switch-service
+!psp-service
+!e2e-tests
+**/target
