@@ -31,6 +31,9 @@ import org.springframework.web.client.RestClient;
  * Where they differ is exactly the problem Phase 6 has to solve.
  *
  * <p>Ravi (Bank A) pays Rs 200 to Anu's shop (Bank B) in every test.
+ *
+ * <p>Runs against the "raw" switch: resolution off, first attempt only. These tests pin down what
+ * ONE attempt sees; ResolutionEndToEndTest shows how Phase 6 then finds out the truth.
  */
 class ChaosEndToEndTest {
 
@@ -257,7 +260,7 @@ class ChaosEndToEndTest {
     }
 
     private static RespPay pay(String payerVpa, String payeeVpa) {
-        return http.post().uri(system.pspUrl() + "/pay")
+        return http.post().uri(system.rawPspUrl() + "/pay")
                 .body(Map.of("payerVpa", payerVpa, "payeeVpa", payeeVpa, "amount", "200.00"))
                 .retrieve()
                 .body(RespPay.class);
@@ -282,7 +285,7 @@ class ChaosEndToEndTest {
     }
 
     private static TxnDetails details(String txnId) {
-        return http.get().uri(system.switchUrl() + "/txns/" + txnId).retrieve().body(TxnDetails.class);
+        return http.get().uri(system.rawSwitchUrl() + "/txns/" + txnId).retrieve().body(TxnDetails.class);
     }
 
     private static void eventually(Duration within, java.util.function.BooleanSupplier condition) {

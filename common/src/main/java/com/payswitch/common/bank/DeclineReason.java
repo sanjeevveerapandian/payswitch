@@ -11,5 +11,10 @@ public enum DeclineReason {
     /** A DEBIT that arrived after its own REVERSE had already been processed. */
     ALREADY_REVERSED,
     /** Chaos testing only: the bank said no without even looking at the request. Nothing happened. */
-    SIMULATED_DECLINE
+    SIMULATED_DECLINE,
+    /**
+     * A status check found no record of this operation and fenced it: the bank promised the switch
+     * it will never do it. Any later request for it gets this answer.
+     */
+    FENCED
 }

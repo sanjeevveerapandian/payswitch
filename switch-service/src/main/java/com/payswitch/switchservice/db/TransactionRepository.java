@@ -4,7 +4,10 @@ import com.payswitch.switchservice.domain.Txn;
 import com.payswitch.switchservice.domain.TxnState;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.time.Duration;
 import java.time.OffsetDateTime;
+import java.util.Collection;
+import java.util.List;
 import java.util.Optional;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Repository;
@@ -78,6 +81,51 @@ public class TransactionRepository {
                 """)
                 .param("txnId", txnId)
                 .param("expectedVersion", expectedVersion)
+                .update();
+    }
+
+    /**
+     * Claims up to {@code batchSize} stuck payments for one resolver. MUST run inside a database
+     * transaction: the row locks from FOR UPDATE are what keep two resolvers apart.
+     *
+     * <p>SKIP LOCKED: if another resolver is claiming some of these rows right now, do not wait
+     * for it. Just skip those rows and take the next ones. Two resolvers running at once end up
+     * with different payments instead of queueing behind each other.
+     *
+     * <p>Then each claimed row gets a lease (next_attempt_at in the future), so after we commit,
+     * other resolvers keep skipping it while we work on it.
+     */
+    public List<String> claimStuck(Collection<TxnState> states, Duration stuckFor, int batchSize, Duration lease) {
+        List<String> ids = jdbc.sql("""
+                SELECT txn_id FROM transactions
+                WHERE state IN (:states)
+                  AND updated_at <= now() - make_interval(secs => :stuckFor)
+                  AND next_attempt_at <= now()
+                ORDER BY updated_at
+                LIMIT :batchSize
+                FOR UPDATE SKIP LOCKED
+                """)
+                .param("states", states.stream().map(Enum::name).toList())
+                .param("stuckFor", stuckFor.toMillis() / 1000.0)
+                .param("batchSize", batchSize)
+                .query(String.class)
+                .list();
+        if (!ids.isEmpty()) {
+            jdbc.sql("UPDATE transactions SET next_attempt_at = now() + make_interval(secs => :lease) "
+                            + "WHERE txn_id IN (:ids)")
+                    .param("lease", lease.toMillis() / 1000.0)
+                    .param("ids", ids)
+                    .update();
+        }
+        return ids;
+    }
+
+    /** Leases one payment, e.g. while POST /pay is resolving it inline, so the job leaves it alone. */
+    public void lease(String txnId, Duration lease) {
+        jdbc.sql("UPDATE transactions SET next_attempt_at = now() + make_interval(secs => :lease) "
+                        + "WHERE txn_id = :txnId")
+                .param("lease", lease.toMillis() / 1000.0)
+                .param("txnId", txnId)
                 .update();
     }
 

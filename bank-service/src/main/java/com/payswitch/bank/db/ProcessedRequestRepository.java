@@ -24,6 +24,22 @@ public class ProcessedRequestRepository {
     }
 
     /**
+     * Takes a lock on this txnId for the rest of the current database transaction. Any other
+     * transaction asking for the same txnId waits here until we commit or roll back.
+     *
+     * <p>A Postgres "advisory" lock locks a NUMBER, not a row, so it works even before any row
+     * exists. hashtextextended turns the txnId into a 64-bit number. Two different txnIds could in
+     * theory hash to the same number; then they just wait for each other briefly. Never wrong,
+     * at worst slightly slower.
+     */
+    public void lockTxn(String txnId) {
+        jdbc.sql("SELECT pg_advisory_xact_lock(hashtextextended(:txnId, 0))")
+                .param("txnId", txnId)
+                .query((rs, n) -> 1)
+                .single();
+    }
+
+    /**
      * Tries to become the one transaction that handles (txnId, op).
      *
      * <p>If another transaction already inserted the same key but has not committed yet,

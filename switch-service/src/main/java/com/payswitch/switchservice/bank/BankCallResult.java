@@ -26,6 +26,15 @@ public record BankCallResult(BankCallOutcome outcome, DeclineReason declineReaso
         return new BankCallResult(BankCallOutcome.SUCCESS, null, "OK");
     }
 
+    /** A REVERSE answered NO_DEBIT: nothing to undo, and a later debit is blocked. */
+    public static BankCallResult successNoDebit() {
+        return new BankCallResult(BankCallOutcome.SUCCESS, null, "NO_DEBIT");
+    }
+
+    public boolean isNoDebit() {
+        return outcome == BankCallOutcome.SUCCESS && "NO_DEBIT".equals(detail);
+    }
+
     public static BankCallResult declined(DeclineReason reason) {
         return new BankCallResult(BankCallOutcome.DECLINED, reason, reason == null ? "UNSPECIFIED" : reason.name());
     }

@@ -73,14 +73,24 @@ class IdempotencyTest extends BankIntegrationTest {
         assertEquals(500_000, balance(ravi)); // not 520_000
     }
 
+    /**
+     * Changed in Phase 6 (approved): a reverse with no debit is no longer "rejected". It answers
+     * NO_DEBIT, a clear final answer, and blocks any debit that arrives later.
+     */
     @Test
-    void reversingADebitThatNeverHappenedIsRejected() {
+    void reversingADebitThatNeverHappenedReturnsNoDebitAndBlocksALaterDebit() {
+        String ravi = newCustomer(500_000);
         String txn = newTxnId();
 
         BankResponse r = bank.reverse(new ReverseRequest(txn));
 
-        assertEquals(BankResult.DECLINED, r.result());
-        assertEquals(DeclineReason.ORIGINAL_NOT_FOUND, r.reason());
+        assertEquals(BankResult.NO_DEBIT, r.result());
+        assertEquals(0, journalEntriesFor(txn));
+
+        BankResponse lateDebit = bank.debit(new DebitRequest(txn, ravi, 20_000));
+
+        assertEquals(BankResult.DECLINED, lateDebit.result());
+        assertEquals(500_000, balance(ravi));
         assertEquals(0, journalEntriesFor(txn));
     }
 

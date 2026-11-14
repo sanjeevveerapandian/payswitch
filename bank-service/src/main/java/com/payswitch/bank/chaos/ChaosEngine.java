@@ -28,6 +28,8 @@ public class ChaosEngine {
 
     private ChaosSettings settings = ChaosSettings.NONE;
     private Random dice = new Random();
+    /** Separate dice for /status-check, so status checks never change what the main dice say. */
+    private Random statusDice = new Random();
 
     public ChaosEngine(@Value("${bank.chaos.drop-response-sleep:8s}") Duration dropResponseSleep) {
         this.dropResponseSleep = dropResponseSleep;
@@ -41,7 +43,25 @@ public class ChaosEngine {
     public synchronized void configure(ChaosSettings newSettings) {
         this.settings = newSettings;
         this.dice = newSettings.seed() == null ? new Random() : new Random(newSettings.seed());
+        this.statusDice = newSettings.seed() == null ? new Random() : new Random(newSettings.seed() + 1);
         log.warn("Chaos settings changed: {}", newSettings);
+    }
+
+    /**
+     * Runs one POST /status-check with chaos applied. Only statusErrorRate applies here.
+     *
+     * @throws ChaosFailureException with probability statusErrorRate; nothing is looked up or written
+     */
+    public <T> T runStatusCheck(String txnId, Supplier<T> check) {
+        boolean fail;
+        synchronized (this) {
+            fail = statusDice.nextDouble() < settings.statusErrorRate();
+        }
+        if (fail) {
+            log.warn("CHAOS STATUS-CHECK {}: answering HTTP 500, nothing looked up", txnId);
+            throw new ChaosFailureException("STATUS-CHECK " + txnId);
+        }
+        return check.get();
     }
 
     /**

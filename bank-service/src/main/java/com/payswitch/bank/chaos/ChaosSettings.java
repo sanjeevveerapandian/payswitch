@@ -20,16 +20,24 @@ package com.payswitch.bank.chaos;
  * @param dropResponseRate do the operation, commit it, then go silent past the caller's timeout
  * @param seed             seed for the dice; the same seed gives the same sequence of decisions.
  *                         null = a different sequence every time
+ * @param statusErrorRate  POST /status-check only: answer HTTP 500 without looking anything up.
+ *                         Rolled on separate dice, so it never shifts the sequence above.
  */
 public record ChaosSettings(double declineRate, double errorRate, long delayMs, double dropResponseRate,
-                            Long seed) {
+                            Long seed, double statusErrorRate) {
 
-    public static final ChaosSettings NONE = new ChaosSettings(0, 0, 0, 0, null);
+    public static final ChaosSettings NONE = new ChaosSettings(0, 0, 0, 0, null, 0);
+
+    /** Settings without status-check chaos (the Phase 5 shape). */
+    public ChaosSettings(double declineRate, double errorRate, long delayMs, double dropResponseRate, Long seed) {
+        this(declineRate, errorRate, delayMs, dropResponseRate, seed, 0);
+    }
 
     public ChaosSettings {
         requireRate(declineRate, "declineRate");
         requireRate(errorRate, "errorRate");
         requireRate(dropResponseRate, "dropResponseRate");
+        requireRate(statusErrorRate, "statusErrorRate");
         if (declineRate + errorRate + dropResponseRate > 1.0) {
             throw new IllegalArgumentException("declineRate + errorRate + dropResponseRate must be at most 1");
         }

@@ -23,23 +23,25 @@ import org.testcontainers.utility.DockerImageName;
  * The whole system, running inside this test JVM:
  *
  * <pre>
- *   PSP  ->  Switch  ->  Bank A
- *                    ->  Bank B        one Postgres container, three databases
+ *   PSP      ->  Switch      ->  Bank A
+ *                            ->  Bank B        one Postgres container, several databases
+ *   raw PSP  ->  raw Switch  ->  (same banks)
  * </pre>
  *
- * Each service is a separate Spring application with its own random HTTP port, and they talk
- * to each other over real HTTP, exactly like in Docker Compose.
+ * The main switch resolves unknowns (Phase 6). The "raw" switch has resolution switched off, so it
+ * only makes the first attempt (Phase 5 behaviour); the Phase 5 chaos tests use it.
  *
- * <p>Started ONCE and shared by every e2e test class ({@link #shared()}); stopped when the test
- * JVM exits.
+ * <p>Each service is a separate Spring application with its own HTTP port, and they talk over
+ * real HTTP, exactly like in Docker Compose. Started ONCE and shared by every e2e test class
+ * ({@link #shared()}); stopped when the test JVM exits.
  *
- * <p>Why every setting is passed explicitly: all four services are on one classpath here, and
- * each has a file called application.yml. Only one of those files can win, so we do not rely
- * on any of them. Command-line arguments override every file.
+ * <p>Why every setting is passed explicitly: all services are on one classpath here, and each has
+ * a file called application.yml. Only one of those files can win, so we do not rely on any of
+ * them. Command-line arguments override every file.
  */
 final class PaymentSystem implements AutoCloseable {
 
-    /** Short timeouts keep the chaos tests fast. The switch gives up on a bank after 1 s... */
+    /** Short timeouts keep the tests fast. The switch gives up on a bank after 1 s... */
     static final String SWITCH_READ_TIMEOUT = "1s";
     /** ...and a dropped response stays silent 2 s, so the switch always gives up first. */
     static final String DROP_RESPONSE_SLEEP = "2s";
@@ -54,6 +56,10 @@ final class PaymentSystem implements AutoCloseable {
     private ConfigurableApplicationContext bankB;
     private ConfigurableApplicationContext switchApp;
     private ConfigurableApplicationContext psp;
+    private ConfigurableApplicationContext rawSwitch;
+    private ConfigurableApplicationContext rawPsp;
+    private List<String> switchArgs;
+    private int switchPort;
 
     static synchronized PaymentSystem shared() {
         if (instance == null) {
@@ -78,41 +84,40 @@ final class PaymentSystem implements AutoCloseable {
         try (Connection c = DriverManager.getConnection(
                 postgres.getJdbcUrl(), postgres.getUsername(), postgres.getPassword());
              Statement s = c.createStatement()) {
-            s.execute("CREATE DATABASE banka");
-            s.execute("CREATE DATABASE bankb");
-            s.execute("CREATE DATABASE switch");
+            for (String db : List.of("banka", "bankb", "switch", "switch_raw")) {
+                s.execute("CREATE DATABASE " + db);
+            }
         }
 
-        // Start order = dependency order: banks first, then the switch, then the PSP.
+        // Start order = dependency order: banks first, then the switches, then the PSPs.
         bankA = bank("BANKA", "banka");
         bankB = bank("BANKB", "bankb");
-        switchApp = run(SwitchServiceApplication.class, withDatabase("switch",
-                "--spring.application.name=switch-service",
-                "--spring.flyway.locations=classpath:db/switch/migration",
-                "--switch.http.connect-timeout=2s",
-                "--switch.http.read-timeout=" + SWITCH_READ_TIMEOUT,
-                "--switch.banks.banka.code=BANKA",
-                "--switch.banks.banka.url=" + bankAUrl(),
-                "--switch.banks.bankb.code=BANKB",
-                "--switch.banks.bankb.url=" + bankBUrl()));
-        psp = run(PspServiceApplication.class, List.of(
-                "--spring.application.name=psp-service",
-                "--psp.switch-url=" + switchUrl(),
-                "--psp.http.connect-timeout=2s",
-                "--psp.http.read-timeout=20s",
-                // The PSP has no database. On this shared classpath Spring would still try to
-                // create one because the JDBC jars are present, so switch that off.
-                "--spring.autoconfigure.exclude="
-                        + "org.springframework.boot.autoconfigure.jdbc.DataSourceAutoConfiguration",
-                "--spring.flyway.enabled=false"));
+
+        switchArgs = switchArgs("switch", true);
+        switchApp = run(SwitchServiceApplication.class, switchArgs, 0);
+        switchPort = port(switchApp);
+        psp = run(PspServiceApplication.class, pspArgs(switchUrl()), 0);
+
+        rawSwitch = run(SwitchServiceApplication.class, switchArgs("switch_raw", false), 0);
+        rawPsp = run(PspServiceApplication.class, pspArgs(rawSwitchUrl()), 0);
 
         // Warm up: the very first request to a fresh app is slow (connection pools, class
         // loading). Do it now, so no test's first bank call trips the 1 s timeout.
         for (String url : List.of(bankAUrl() + "/accounts/ravi@banka/balance",
-                bankBUrl() + "/accounts/anu@bankb/balance", pspUrl() + "/actuator/health")) {
+                bankBUrl() + "/accounts/anu@bankb/balance", pspUrl() + "/actuator/health",
+                switchUrl() + "/actuator/health", rawPspUrl() + "/actuator/health",
+                rawSwitchUrl() + "/actuator/health")) {
             http.get().uri(url).retrieve().toBodilessEntity();
         }
-        http.get().uri(switchUrl() + "/actuator/health").retrieve().toBodilessEntity();
+    }
+
+    /**
+     * Stops the main switch and starts a fresh one on the same port and database, like a crash
+     * and restart. Its startup recovery runs before this method returns.
+     */
+    void restartSwitch() {
+        switchApp.close();
+        switchApp = run(SwitchServiceApplication.class, switchArgs, switchPort);
     }
 
     private ConfigurableApplicationContext bank(String code, String database) {
@@ -121,7 +126,44 @@ final class PaymentSystem implements AutoCloseable {
                 "--spring.profiles.active=chaos",               // /admin/chaos exists, all rates 0
                 "--bank.chaos.drop-response-sleep=" + DROP_RESPONSE_SLEEP,
                 "--bank.code=" + code,
-                "--spring.flyway.locations=classpath:db/bank/migration,classpath:db/bank/seed/" + code));
+                "--spring.flyway.locations=classpath:db/bank/migration,classpath:db/bank/seed/" + code), 0);
+    }
+
+    private List<String> switchArgs(String database, boolean resolution) {
+        return withDatabase(database,
+                "--spring.application.name=switch-service",
+                "--spring.flyway.locations=classpath:db/switch/migration",
+                "--switch.http.connect-timeout=2s",
+                "--switch.http.read-timeout=" + SWITCH_READ_TIMEOUT,
+                "--switch.banks.banka.code=BANKA",
+                "--switch.banks.banka.url=" + bankAUrl(),
+                "--switch.banks.bankb.code=BANKB",
+                "--switch.banks.bankb.url=" + bankBUrl(),
+                // Fast retries: 50 ms, 100 ms between 3 attempts.
+                "--switch.retry.base-delay=50ms",
+                "--switch.retry.multiplier=2",
+                "--switch.retry.jitter=0.2",
+                "--switch.retry.max-attempts=3",
+                "--switch.resolution.enabled=" + resolution,
+                "--switch.resolution.inline-wait=3s",
+                "--switch.resolution.stuck-after=0s",
+                "--switch.resolution.interval=1h",              // tests never wait for the timer
+                "--switch.resolution.batch-size=10",
+                "--switch.resolution.lease=10s",
+                "--switch.resolution.run-on-startup=true");
+    }
+
+    private static List<String> pspArgs(String switchUrl) {
+        return List.of(
+                "--spring.application.name=psp-service",
+                "--psp.switch-url=" + switchUrl,
+                "--psp.http.connect-timeout=2s",
+                "--psp.http.read-timeout=20s",
+                // The PSP has no database. On this shared classpath Spring would still try to
+                // create one because the JDBC jars are present, so switch that off.
+                "--spring.autoconfigure.exclude="
+                        + "org.springframework.boot.autoconfigure.jdbc.DataSourceAutoConfiguration",
+                "--spring.flyway.enabled=false");
     }
 
     private List<String> withDatabase(String database, String... more) {
@@ -133,15 +175,20 @@ final class PaymentSystem implements AutoCloseable {
         return args;
     }
 
-    private static ConfigurableApplicationContext run(Class<?> app, List<String> args) {
+    /** @param port 0 = any free port */
+    private static ConfigurableApplicationContext run(Class<?> app, List<String> args, int port) {
         List<String> all = new ArrayList<>(args);
-        all.add("--server.port=0");                       // 0 = any free port
+        all.add("--server.port=" + port);
         all.add("--spring.main.banner-mode=off");
         return new SpringApplicationBuilder(app).run(all.toArray(String[]::new));
     }
 
+    private static int port(ConfigurableApplicationContext app) {
+        return ((ServletWebServerApplicationContext) app).getWebServer().getPort();
+    }
+
     private static String url(ConfigurableApplicationContext app) {
-        return "http://localhost:" + ((ServletWebServerApplicationContext) app).getWebServer().getPort();
+        return "http://localhost:" + port(app);
     }
 
     String pspUrl() {
@@ -152,12 +199,26 @@ final class PaymentSystem implements AutoCloseable {
         return url(switchApp);
     }
 
+    /** PSP in front of the switch that only makes the first attempt (no resolution). */
+    String rawPspUrl() {
+        return url(rawPsp);
+    }
+
+    String rawSwitchUrl() {
+        return url(rawSwitch);
+    }
+
     String bankAUrl() {
         return url(bankA);
     }
 
     String bankBUrl() {
         return url(bankB);
+    }
+
+    /** A bean from the main switch, e.g. its TransactionService (to set up a "crashed" payment). */
+    <T> T switchBean(Class<T> type) {
+        return switchApp.getBean(type);
     }
 
     /** Sets chaos on one bank, e.g. chaos(bankAUrl(), Map.of("errorRate", 1.0)). */
@@ -188,7 +249,8 @@ final class PaymentSystem implements AutoCloseable {
 
     @Override
     public void close() {
-        for (ConfigurableApplicationContext app : new ConfigurableApplicationContext[] {psp, switchApp, bankB, bankA}) {
+        for (ConfigurableApplicationContext app : new ConfigurableApplicationContext[] {
+                rawPsp, rawSwitch, psp, switchApp, bankB, bankA}) {
             if (app != null && app.isActive()) {
                 app.close();
             }

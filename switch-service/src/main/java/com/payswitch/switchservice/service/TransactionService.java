@@ -10,6 +10,8 @@ import com.payswitch.switchservice.domain.TxnStateMachine;
 import com.payswitch.switchservice.routing.BankRoute;
 import com.payswitch.switchservice.routing.BankRouter;
 import com.payswitch.switchservice.routing.Vpa;
+import java.time.Duration;
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import org.springframework.stereotype.Service;
@@ -119,6 +121,21 @@ public class TransactionService {
         }
         events.insert(txnId, current.state(), current.state(), reason);
         return get(txnId);
+    }
+
+    /**
+     * Claims a batch of stuck payments for one resolver: lock (skipping rows another resolver is
+     * locking right now), lease, commit. One short transaction, no bank calls inside.
+     */
+    @Transactional
+    public List<String> claimStuck(Collection<TxnState> states, Duration stuckFor, int batchSize, Duration lease) {
+        return txns.claimStuck(states, stuckFor, batchSize, lease);
+    }
+
+    /** Keeps the background job away from this payment for {@code lease}. */
+    @Transactional
+    public void lease(String txnId, Duration lease) {
+        txns.lease(txnId, lease);
     }
 
     @Transactional(readOnly = true)

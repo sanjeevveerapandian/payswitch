@@ -16,6 +16,21 @@ switch:
   http:
     connect-timeout: 2s   # max time to open the connection
     read-timeout: 5s      # max time to wait for the bank's answer
+  # Retrying status checks and reversals: wait 1s, 2s, 4s (each +-20%) between 4 attempts.
+  retry:
+    base-delay: 1s
+    multiplier: 2.0
+    jitter: 0.2
+    max-attempts: 4
+  # Finding out what really happened when a bank's answer was UNKNOWN.
+  resolution:
+    enabled: true
+    inline-wait: 3s       # POST /pay waits this long for resolution, then answers PENDING
+    stuck-after: 30s      # the background job leaves payments alone for this long
+    interval: 15s         # how often the background job runs
+    batch-size: 10        # stuck payments claimed per batch
+    lease: 60s            # a claimed payment is off limits to other resolvers for this long
+    run-on-startup: true  # crash recovery
   # VPA routing: the handle after the @ decides the bank.
   #   ravi@banka -> handle "banka" -> Bank A
   banks:

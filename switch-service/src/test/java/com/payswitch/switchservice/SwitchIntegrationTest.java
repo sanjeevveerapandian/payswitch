@@ -19,7 +19,8 @@ import org.springframework.context.annotation.Import;
  * Base for switch tests that need the database. Subclasses share one Spring context, so the
  * Postgres container starts once. Each test uses fresh random txnIds, so tests cannot collide.
  */
-@SpringBootTest
+// Resolution off: these tests pin down what ONE attempt does (Phases 3 to 5). Phase 6 tests turn it on.
+@SpringBootTest(properties = "switch.resolution.enabled=false")
 @Import(TestcontainersConfig.class)
 public abstract class SwitchIntegrationTest {
 

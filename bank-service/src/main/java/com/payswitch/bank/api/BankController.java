@@ -8,6 +8,8 @@ import com.payswitch.common.bank.CreditRequest;
 import com.payswitch.common.bank.DebitRequest;
 import com.payswitch.common.bank.OpType;
 import com.payswitch.common.bank.ReverseRequest;
+import com.payswitch.common.bank.StatusCheckRequest;
+import com.payswitch.common.bank.StatusCheckResponse;
 import com.payswitch.common.bank.StatusResponse;
 import java.util.Optional;
 import java.util.function.Supplier;
@@ -25,8 +27,8 @@ import org.springframework.web.bind.annotation.RestController;
  * The switch reads "result" in the body. 400 means the request itself was malformed; 500 means
  * a real fault, which is safe to retry because nothing was committed.
  *
- * <p>Chaos (profile "chaos" only) wraps the three money operations. Status and balance are never
- * wrapped, so they stay reliable.
+ * <p>Chaos (profile "chaos" only) wraps the three money operations, and /status-check with its own
+ * statusErrorRate knob. GET /status and balance are never wrapped, so they stay reliable.
  */
 @RestController
 public class BankController {
@@ -52,6 +54,13 @@ public class BankController {
     @PostMapping("/reverse")
     public BankResponse reverse(@RequestBody ReverseRequest request) {
         return withChaos(OpType.REVERSE, request.txnId(), () -> bank.reverse(request));
+    }
+
+    /** Look up (txnId, op), and optionally fence it. Chaos here is statusErrorRate only. */
+    @PostMapping("/status-check")
+    public StatusCheckResponse statusCheck(@RequestBody StatusCheckRequest request) {
+        return chaos.map(c -> c.runStatusCheck(request.txnId(), () -> bank.statusCheck(request)))
+                .orElseGet(() -> bank.statusCheck(request));
     }
 
     @GetMapping("/status/{txnId}")

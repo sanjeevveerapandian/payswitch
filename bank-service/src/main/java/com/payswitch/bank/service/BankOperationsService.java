@@ -7,11 +7,14 @@ import com.payswitch.bank.db.ProcessedRequestRepository;
 import com.payswitch.common.bank.BalanceResponse;
 import com.payswitch.common.bank.BankResponse;
 import com.payswitch.common.bank.BankResult;
+import com.payswitch.common.bank.CheckResult;
 import com.payswitch.common.bank.CreditRequest;
 import com.payswitch.common.bank.DebitRequest;
 import com.payswitch.common.bank.DeclineReason;
 import com.payswitch.common.bank.OpType;
 import com.payswitch.common.bank.ReverseRequest;
+import com.payswitch.common.bank.StatusCheckRequest;
+import com.payswitch.common.bank.StatusCheckResponse;
 import com.payswitch.common.bank.StatusResponse;
 import com.payswitch.common.bank.TxnStatus;
 import com.payswitch.ledger.EntryLine;
@@ -102,8 +105,10 @@ public class BankOperationsService {
             BankResponse blockedDebit = BankResponse.declined(txnId, OpType.DEBIT,
                     DeclineReason.ALREADY_REVERSED, "Debit arrived after its reversal");
             if (processed.insertIfAbsent(blockedDebit)) {
-                return BankResponse.declined(txnId, OpType.REVERSE, DeclineReason.ORIGINAL_NOT_FOUND,
-                        "No debit with txnId " + txnId);
+                // Phase 6: this is a clear, final answer, not a refusal. The payer's money never
+                // left, and the tombstone above means it never will. The switch can close the payment.
+                return new BankResponse(txnId, OpType.REVERSE, BankResult.NO_DEBIT, null,
+                        "No debit with txnId " + txnId + "; any later debit is blocked");
             }
 
             BankResponse original = processed.find(txnId, OpType.DEBIT).orElseThrow();
@@ -122,12 +127,41 @@ public class BankOperationsService {
         });
     }
 
+    /** Read-only. Never writes anything, so it is always safe to call. */
     @Transactional(readOnly = true)
     public StatusResponse status(String txnId, OpType op) {
         TxnStatus status = processed.find(txnId, op)
-                .map(saved -> saved.result() == BankResult.SUCCESS ? TxnStatus.SUCCESS : TxnStatus.FAILED)
+                .map(saved -> saved.result() == BankResult.DECLINED ? TxnStatus.FAILED : TxnStatus.SUCCESS)
                 .orElse(TxnStatus.NOT_FOUND);
         return new StatusResponse(txnId, op, status);
+    }
+
+    /**
+     * "What happened to (txnId, op)?" If we have a saved answer, return it. If we have none and the
+     * caller asked us to fence, write a FENCED tombstone so this operation can never run later:
+     * a late request for it will get the tombstone back as a DECLINED answer.
+     *
+     * <p>Runs under the same per-txnId lock as debit, credit and reverse, so it can never look
+     * "between" a request that is being processed right now: it waits for it to finish first.
+     */
+    @Transactional
+    public StatusCheckResponse statusCheck(StatusCheckRequest request) {
+        String txnId = request.txnId();
+        OpType op = request.op();
+        processed.lockTxn(txnId);
+
+        Optional<BankResponse> saved = processed.find(txnId, op);
+        if (saved.isPresent()) {
+            CheckResult result = saved.get().reason() == DeclineReason.FENCED ? CheckResult.FENCED : CheckResult.FOUND;
+            return new StatusCheckResponse(txnId, op, result, saved.get());
+        }
+        if (!request.fence()) {
+            return new StatusCheckResponse(txnId, op, CheckResult.NOT_FOUND, null);
+        }
+        BankResponse tombstone = BankResponse.declined(txnId, op, DeclineReason.FENCED,
+                "Fenced by a status check: this " + op + " will never be processed");
+        processed.insertIfAbsent(tombstone);        // always inserts: we hold the txnId lock
+        return new StatusCheckResponse(txnId, op, CheckResult.FENCED, tombstone);
     }
 
     @Transactional(readOnly = true)
@@ -141,6 +175,9 @@ public class BankOperationsService {
      * Every later caller gets the saved answer and {@code work} never runs again.
      */
     private BankResponse once(String txnId, OpType op, Supplier<BankResponse> work) {
+        // One operation per txnId at a time: debit, credit, reverse and status-check for the same
+        // txnId run one after another, never interleaved. Released automatically at commit/rollback.
+        processed.lockTxn(txnId);
         if (!processed.claim(txnId, op)) {
             return processed.find(txnId, op).orElseThrow(() ->
                     new IllegalStateException("Claimed row has no saved response: " + txnId + "/" + op));
