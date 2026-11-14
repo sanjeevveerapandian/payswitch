@@ -1,5 +1,6 @@
 package com.payswitch.psp;
 
+import com.payswitch.common.pay.PayState;
 import com.payswitch.common.pay.ReqPay;
 import com.payswitch.common.pay.RespPay;
 import com.payswitch.common.pay.TxnDetails;
@@ -35,11 +36,14 @@ public class PspController {
         }
     }
 
-    /** "What happened to my payment?" Asks the switch, which is the source of truth. */
+    /**
+     * "What happened to my payment?" Asks the switch, which is the source of truth, and turns its
+     * internal state into what a customer understands: SUCCESS, FAILED, REVERSED or PENDING.
+     */
     @GetMapping("/pay/{txnId}")
     public RespPay status(@PathVariable String txnId) {
         TxnDetails details = switchClient.details(txnId);
-        return new RespPay(details.txnId(), details.state(), details.reason());
+        return new RespPay(details.txnId(), PayState.fromSwitchState(details.state()), details.reason());
     }
 
     /**

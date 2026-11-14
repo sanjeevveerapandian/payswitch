@@ -1,14 +1,15 @@
 package com.payswitch.switchservice.service;
 
-import com.payswitch.common.bank.BankResponse;
-import com.payswitch.common.bank.BankResult;
 import com.payswitch.common.bank.CreditRequest;
 import com.payswitch.common.bank.DebitRequest;
+import com.payswitch.common.bank.DeclineReason;
 import com.payswitch.common.bank.ReverseRequest;
+import com.payswitch.common.pay.PayState;
 import com.payswitch.common.pay.ReqPay;
 import com.payswitch.common.pay.RespPay;
 import com.payswitch.common.pay.TxnDetails;
 import com.payswitch.common.pay.TxnEventView;
+import com.payswitch.switchservice.bank.BankCallResult;
 import com.payswitch.switchservice.bank.BankClient;
 import com.payswitch.switchservice.domain.Txn;
 import com.payswitch.switchservice.domain.TxnEvent;
@@ -17,6 +18,9 @@ import com.payswitch.switchservice.routing.BankRoute;
 import com.payswitch.switchservice.routing.BankRouter;
 import com.payswitch.switchservice.routing.Vpa;
 import java.util.List;
+import java.util.Set;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 /**
@@ -32,12 +36,18 @@ import org.springframework.stereotype.Service;
  *       open while we wait for a bank.</li>
  * </ol>
  *
- * <p>Phase 4 handles the happy path and business declines. If a bank call throws (timeout,
- * connection refused), the exception propagates and the payment stays in its *_SENT state,
- * which is the honest answer: outcome unknown. Recovering from that is a later phase.
+ * <p>Every bank call ends in exactly one of SUCCESS, DECLINED or UNKNOWN (see BankClient).
+ * On UNKNOWN the payment stays in its *_SENT state, the event history says why, and the
+ * customer is told PENDING. Phase 6 adds the recovery that finds out what really happened.
  */
 @Service
 public class PaymentOrchestrator {
+
+    private static final Logger log = LoggerFactory.getLogger(PaymentOrchestrator.class);
+
+    /** The only decline reasons that prove the payer's money never left, so FAILED is the truth. */
+    private static final Set<DeclineReason> NOTHING_TO_REVERSE =
+            Set.of(DeclineReason.ORIGINAL_NOT_FOUND, DeclineReason.ORIGINAL_NOT_SUCCESSFUL);
 
     private final TransactionService txns;
     private final BankRouter router;
@@ -66,31 +76,63 @@ public class PaymentOrchestrator {
 
         // ---- Step 1: debit the payer -------------------------------------------------------
         txn = move(txn, TxnState.DEBIT_SENT, "DEBIT_REQUESTED:" + payerBank.code());
-        BankResponse debit = banks.debit(payerBank,
+        BankCallResult debit = banks.debit(payerBank,
                 new DebitRequest(txn.txnId(), txn.payerVpa(), txn.amount()));
-        if (debit.result() == BankResult.DECLINED) {
-            move(txn, TxnState.FAILED, "DEBIT_DECLINED:" + debit.reason());
-            return respond(txn.txnId());                    // money never left the payer
+        switch (debit.outcome()) {
+            case DECLINED -> {
+                move(txn, TxnState.FAILED, "DEBIT_DECLINED:" + debit.detail());
+                return respond(txn.txnId());                // money never left the payer
+            }
+            case UNKNOWN -> {
+                // Ravi MAY have been debited. Stay in DEBIT_SENT: that is exactly what we know.
+                txns.note(txn.txnId(), txn.version(), "DEBIT_UNKNOWN: " + debit.detail());
+                log.warn("Txn {}: debit outcome UNKNOWN ({}). Left in DEBIT_SENT.", txn.txnId(), debit.detail());
+                return respond(txn.txnId());                // PENDING
+            }
+            case SUCCESS -> txn = move(txn, TxnState.DEBITED, "DEBIT_OK");
         }
-        txn = move(txn, TxnState.DEBITED, "DEBIT_OK");
 
         // ---- Step 2: credit the payee ------------------------------------------------------
         txn = move(txn, TxnState.CREDIT_SENT, "CREDIT_REQUESTED:" + payeeBank.code());
-        BankResponse credit = banks.credit(payeeBank,
+        BankCallResult credit = banks.credit(payeeBank,
                 new CreditRequest(txn.txnId(), txn.payeeVpa(), txn.amount()));
-        if (credit.result() == BankResult.SUCCESS) {
-            move(txn, TxnState.SUCCESS, "CREDIT_OK");
-            return respond(txn.txnId());                    // money is with the payee
+        switch (credit.outcome()) {
+            case SUCCESS -> {
+                move(txn, TxnState.SUCCESS, "CREDIT_OK");
+                return respond(txn.txnId());                // money is with the payee
+            }
+            case UNKNOWN -> {
+                // Ravi WAS debited. Anu MAY have been credited. Do not reverse on a guess:
+                // if Anu did get the money, a reversal would pay it out twice.
+                txns.note(txn.txnId(), txn.version(), "CREDIT_UNKNOWN: " + credit.detail());
+                log.warn("Txn {}: credit outcome UNKNOWN ({}). Left in CREDIT_SENT.", txn.txnId(), credit.detail());
+                return respond(txn.txnId());                // PENDING
+            }
+            case DECLINED -> txn = move(txn, TxnState.REVERSAL_SENT, "CREDIT_DECLINED:" + credit.detail());
         }
 
         // ---- Step 3: credit refused, so send the payer's money back -------------------------
-        txn = move(txn, TxnState.REVERSAL_SENT, "CREDIT_DECLINED:" + credit.reason());
-        BankResponse reversal = banks.reverse(payerBank, new ReverseRequest(txn.txnId()));
-        if (reversal.result() == BankResult.SUCCESS) {
-            move(txn, TxnState.REVERSED, "REVERSAL_OK");
-        } else {
-            // The bank says there was no successful debit to undo, so the payer never paid.
-            move(txn, TxnState.FAILED, "REVERSAL_DECLINED:" + reversal.reason());
+        BankCallResult reversal = banks.reverse(payerBank, new ReverseRequest(txn.txnId()));
+        switch (reversal.outcome()) {
+            case SUCCESS -> move(txn, TxnState.REVERSED, "REVERSAL_OK");
+            case DECLINED -> {
+                if (NOTHING_TO_REVERSE.contains(reversal.declineReason())) {
+                    // The bank says there was no successful debit to undo, so the payer never paid.
+                    log.warn("Txn {}: reversal declined ({}): no debit to undo. Marking FAILED.",
+                            txn.txnId(), reversal.detail());
+                    move(txn, TxnState.FAILED, "REVERSAL_DECLINED:" + reversal.detail());
+                } else {
+                    // Any other "no" does NOT prove the money is back. Ravi's money is still at risk.
+                    txns.note(txn.txnId(), txn.version(), "REVERSAL_DECLINED: " + reversal.detail());
+                    log.error("Txn {}: REVERSAL DECLINED ({}). Payer's money is NOT back. Needs attention.",
+                            txn.txnId(), reversal.detail());
+                }
+            }
+            case UNKNOWN -> {
+                txns.note(txn.txnId(), txn.version(), "REVERSAL_UNKNOWN: " + reversal.detail());
+                log.error("Txn {}: REVERSAL outcome UNKNOWN ({}). Payer's money may NOT be back. Needs attention.",
+                        txn.txnId(), reversal.detail());
+            }
         }
         return respond(txn.txnId());
     }
@@ -118,6 +160,6 @@ public class PaymentOrchestrator {
 
     private RespPay respond(String txnId) {
         TxnDetails details = details(txnId);
-        return new RespPay(details.txnId(), details.state(), details.reason());
+        return new RespPay(details.txnId(), PayState.fromSwitchState(details.state()), details.reason());
     }
 }

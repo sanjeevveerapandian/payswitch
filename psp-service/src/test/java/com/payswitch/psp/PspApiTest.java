@@ -13,6 +13,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import com.payswitch.common.pay.PayState;
 import com.payswitch.common.pay.ReqPay;
 import com.payswitch.common.pay.RespPay;
 import com.payswitch.common.pay.TxnDetails;
@@ -46,7 +47,7 @@ class PspApiTest {
     void payConvertsRupeesToPaiseAndForwardsToTheSwitch() throws Exception {
         when(switchClient.pay(any())).thenAnswer(call -> {
             ReqPay sent = call.getArgument(0);
-            return new RespPay(sent.txnId(), "SUCCESS", "CREDIT_OK");
+            return new RespPay(sent.txnId(), PayState.SUCCESS, "CREDIT_OK");
         });
 
         mvc.perform(post("/pay").contentType(MediaType.APPLICATION_JSON).content(RAVI_PAYS_ANU_200))
@@ -66,7 +67,7 @@ class PspApiTest {
     @Test
     void everyPaymentGetsItsOwnTxnId() throws Exception {
         when(switchClient.pay(any())).thenAnswer(call ->
-                new RespPay(((ReqPay) call.getArgument(0)).txnId(), "SUCCESS", "CREDIT_OK"));
+                new RespPay(((ReqPay) call.getArgument(0)).txnId(), PayState.SUCCESS, "CREDIT_OK"));
 
         mvc.perform(post("/pay").contentType(MediaType.APPLICATION_JSON).content(RAVI_PAYS_ANU_200));
         mvc.perform(post("/pay").contentType(MediaType.APPLICATION_JSON).content(RAVI_PAYS_ANU_200));
@@ -107,6 +108,27 @@ class PspApiTest {
                 .andExpect(jsonPath("$.txnId").value("TXN1"))
                 .andExpect(jsonPath("$.state").value("REVERSED"))
                 .andExpect(jsonPath("$.reason").value("REVERSAL_OK"));
+    }
+
+    @Test
+    void unfinishedPaymentIsShownAsPendingNotFailed() throws Exception {
+        when(switchClient.details("TXN2")).thenReturn(new TxnDetails("TXN2", "ravi@banka", "anu@bankb",
+                "BANKA", "BANKB", 20_000, "DEBIT_SENT", "DEBIT_UNKNOWN: timeout", List.of()));
+
+        mvc.perform(get("/pay/TXN2"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.state").value("PENDING"))
+                .andExpect(jsonPath("$.reason").value("DEBIT_UNKNOWN: timeout"));
+    }
+
+    @Test
+    void pendingFromTheSwitchIsPassedOnAsIs() throws Exception {
+        when(switchClient.pay(any())).thenAnswer(call ->
+                new RespPay(((ReqPay) call.getArgument(0)).txnId(), PayState.PENDING, "CREDIT_UNKNOWN: timeout"));
+
+        mvc.perform(post("/pay").contentType(MediaType.APPLICATION_JSON).content(RAVI_PAYS_ANU_200))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.state").value("PENDING"));
     }
 
     @Test

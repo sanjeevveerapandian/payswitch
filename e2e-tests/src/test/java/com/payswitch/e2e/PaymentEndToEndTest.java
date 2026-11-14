@@ -6,55 +6,48 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import com.payswitch.common.bank.BalanceResponse;
 import com.payswitch.common.bank.StatusResponse;
 import com.payswitch.common.bank.TxnStatus;
+import com.payswitch.common.pay.PayState;
 import com.payswitch.common.pay.RespPay;
 import com.payswitch.common.pay.TxnDetails;
 import com.payswitch.common.pay.TxnEventView;
 import java.util.List;
 import java.util.Map;
-import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.web.client.HttpClientErrorException;
 import org.springframework.web.client.RestClient;
 
 /**
- * Real payments through all four services over real HTTP. Seed data: Ravi Rs 5,000 and
- * Meena Rs 2,000 at Bank A; Anu's shop Rs 1,000 and Kiran Rs 3,000 at Bank B.
+ * Real payments through all four services over real HTTP, with every bank behaving well.
+ * Seed data: Ravi Rs 5,000 and Meena Rs 2,000 at Bank A; Anu's shop Rs 1,000 and Kiran
+ * Rs 3,000 at Bank B.
  */
 class PaymentEndToEndTest {
 
-    private static final PaymentSystem system = new PaymentSystem();
+    private static final PaymentSystem system = PaymentSystem.shared();
     private static final RestClient http = RestClient.create();
 
     private Money before;
 
-    @BeforeAll
-    static void startEverything() throws Exception {
-        system.start();
-    }
-
-    @AfterAll
-    static void stopEverything() {
-        system.close();
-    }
-
     @BeforeEach
     void rememberWhereTheMoneyIs() {
-        before = Money.snapshot();
+        system.chaosOff();
+        before = Money.snapshot(system);
     }
 
-    /** After EVERY test, whatever happened: no money was created or destroyed. */
+    /**
+     * After EVERY test here (all banks reliable, so every payment finishes): customer money in
+     * total is unchanged, and nothing is left in transit.
+     */
     @AfterEach
     void moneyIsConserved() {
-        Money after = Money.snapshot();
-        assertEquals(before.customersA + before.customersB, after.customersA + after.customersB,
+        Money after = Money.snapshot(system);
+        assertEquals(before.customersA() + before.customersB(), after.customersA() + after.customersB(),
                 "total customer money across both banks changed");
         // What Bank A owes the switch + what Bank B owes the switch is always zero in total:
         // every rupee one bank is waiting to send, the other bank has already paid out.
-        assertEquals(before.settlementA + before.settlementB, after.settlementA + after.settlementB,
+        assertEquals(before.settlementA() + before.settlementB(), after.settlementA() + after.settlementB(),
                 "money is stuck in a settlement account");
         system.auditBothBanks();
     }
@@ -66,17 +59,17 @@ class PaymentEndToEndTest {
 
         RespPay resp = pay("ravi@banka", "anu@bankb", "200.00");
 
-        assertEquals("SUCCESS", resp.state());
+        assertEquals(PayState.SUCCESS, resp.state());
         assertEquals(-20_000, balance(system.bankAUrl(), "ravi@banka") - ravi);
         assertEquals(+20_000, balance(system.bankBUrl(), "anu@bankb") - anu);
 
         // Moved exactly once: Bank A's customers hold Rs 200 less, Bank B's hold Rs 200 more.
-        Money after = Money.snapshot();
-        assertEquals(-20_000, after.customersA - before.customersA);
-        assertEquals(+20_000, after.customersB - before.customersB);
+        Money after = Money.snapshot(system);
+        assertEquals(-20_000, after.customersA() - before.customersA());
+        assertEquals(+20_000, after.customersB() - before.customersB());
         // Bank A now owes the switch Rs 200; the switch owes Bank B Rs 200.
-        assertEquals(+20_000, after.settlementA - before.settlementA);
-        assertEquals(-20_000, after.settlementB - before.settlementB);
+        assertEquals(+20_000, after.settlementA() - before.settlementA());
+        assertEquals(-20_000, after.settlementB() - before.settlementB());
 
         assertEquals(List.of("INITIATED", "DEBIT_SENT", "DEBITED", "CREDIT_SENT", "SUCCESS"), path(resp.txnId()));
         assertEquals(TxnStatus.SUCCESS, bankStatus(system.bankAUrl(), resp.txnId(), "DEBIT"));
@@ -93,9 +86,9 @@ class PaymentEndToEndTest {
         // Meena has Rs 2,000 and tries to pay Rs 99,999.
         RespPay resp = pay("meena@banka", "anu@bankb", "99999");
 
-        assertEquals("FAILED", resp.state());
+        assertEquals(PayState.FAILED, resp.state());
         assertEquals("DEBIT_DECLINED:INSUFFICIENT_FUNDS", resp.reason());
-        assertEquals(before, Money.snapshot());                     // nothing moved at either bank
+        assertEquals(before, Money.snapshot(system));               // nothing moved at either bank
         assertEquals(List.of("INITIATED", "DEBIT_SENT", "FAILED"), path(resp.txnId()));
         assertEquals(TxnStatus.FAILED, bankStatus(system.bankAUrl(), resp.txnId(), "DEBIT"));
         assertEquals(TxnStatus.NOT_FOUND, bankStatus(system.bankBUrl(), resp.txnId(), "CREDIT"));
@@ -108,10 +101,10 @@ class PaymentEndToEndTest {
         // The handle "bankb" is fine, so the switch routes it. Bank B has no customer "ghost".
         RespPay resp = pay("ravi@banka", "ghost@bankb", "200.00");
 
-        assertEquals("REVERSED", resp.state());
+        assertEquals(PayState.REVERSED, resp.state());
         assertEquals("REVERSAL_OK", resp.reason());
         assertEquals(ravi, balance(system.bankAUrl(), "ravi@banka"));
-        assertEquals(before, Money.snapshot());                     // debit + reversal cancel out
+        assertEquals(before, Money.snapshot(system));               // debit + reversal cancel out
 
         assertEquals(List.of("INITIATED", "DEBIT_SENT", "DEBITED", "CREDIT_SENT", "REVERSAL_SENT", "REVERSED"),
                 path(resp.txnId()));
@@ -126,9 +119,9 @@ class PaymentEndToEndTest {
     void unknownBankHandleFailsBeforeAnyBankIsCalled() {
         RespPay resp = pay("ravi@banka", "anu@nobank", "200.00");
 
-        assertEquals("FAILED", resp.state());
+        assertEquals(PayState.FAILED, resp.state());
         assertEquals("UNKNOWN_HANDLE", resp.reason());
-        assertEquals(before, Money.snapshot());
+        assertEquals(before, Money.snapshot(system));
         assertEquals(List.of("INITIATED", "FAILED"), path(resp.txnId()));
         assertEquals(TxnStatus.NOT_FOUND, bankStatus(system.bankAUrl(), resp.txnId(), "DEBIT"));
     }
@@ -137,10 +130,10 @@ class PaymentEndToEndTest {
     void paymentInTheOtherDirectionWorksToo() {
         RespPay resp = pay("kiran@bankb", "meena@banka", "150.50");
 
-        assertEquals("SUCCESS", resp.state());
-        Money after = Money.snapshot();
-        assertEquals(+15_050, after.customersA - before.customersA);
-        assertEquals(-15_050, after.customersB - before.customersB);
+        assertEquals(PayState.SUCCESS, resp.state());
+        Money after = Money.snapshot(system);
+        assertEquals(+15_050, after.customersA() - before.customersA());
+        assertEquals(-15_050, after.customersB() - before.customersB());
     }
 
     @Test
@@ -149,7 +142,7 @@ class PaymentEndToEndTest {
                 () -> pay("ravi@banka", "anu@bankb", "200.505"));
 
         assertEquals(400, e.getStatusCode().value());
-        assertEquals(before, Money.snapshot());
+        assertEquals(before, Money.snapshot(system));
     }
 
     // ---------------------------------------------------------------------------------------
@@ -179,30 +172,5 @@ class PaymentEndToEndTest {
     /** The states the payment passed through, read from the switch's txn_events history. */
     private static List<String> path(String txnId) {
         return events(txnId).stream().map(TxnEventView::toState).toList();
-    }
-
-    /**
-     * Where all the money is, in paise.
-     *
-     * @param customersA  total of every customer balance at Bank A
-     * @param settlementA what Bank A owes the switch (negative = the switch owes Bank A)
-     */
-    private record Money(long customersA, long settlementA, long customersB, long settlementB) {
-
-        static Money snapshot() {
-            return new Money(customers(system.bankADb()), settlement(system.bankADb()),
-                    customers(system.bankBDb()), settlement(system.bankBDb()));
-        }
-
-        // Customer and settlement accounts are liabilities: natural balance = -raw_balance.
-        private static long customers(JdbcClient db) {
-            return db.sql("SELECT COALESCE(SUM(-raw_balance), 0) FROM accounts WHERE vpa IS NOT NULL")
-                    .query(Long.class).single();
-        }
-
-        private static long settlement(JdbcClient db) {
-            return db.sql("SELECT -raw_balance FROM accounts WHERE id = 'SWITCH_SETTLEMENT'")
-                    .query(Long.class).single();
-        }
     }
 }

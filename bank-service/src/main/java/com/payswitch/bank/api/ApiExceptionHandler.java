@@ -1,5 +1,6 @@
 package com.payswitch.bank.api;
 
+import com.payswitch.bank.chaos.ChaosFailureException;
 import com.payswitch.bank.service.UnknownVpaException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
@@ -31,6 +32,12 @@ public class ApiExceptionHandler {
     @ExceptionHandler(UnknownVpaException.class)
     public ProblemDetail unknownVpa(UnknownVpaException e) {
         return ProblemDetail.forStatusAndDetail(HttpStatus.NOT_FOUND, e.getMessage());
+    }
+
+    /** Chaos chose ERROR. A real bank's 500 looks the same from outside. */
+    @ExceptionHandler(ChaosFailureException.class)
+    public ProblemDetail chaosFailure(ChaosFailureException e) {
+        return ProblemDetail.forStatusAndDetail(HttpStatus.INTERNAL_SERVER_ERROR, e.getMessage());
     }
 
     private static String rootMessage(Throwable e) {

@@ -104,6 +104,23 @@ public class TransactionService {
         return apply(current, newState, reason);
     }
 
+    /**
+     * Records something that happened WITHOUT changing the state, e.g. "the debit call came back
+     * UNKNOWN: timeout". The event's from and to are both the current state. This is not a
+     * transition, so the state machine's "no self-moves" rule is not involved. The version still
+     * goes up, so anyone holding an older snapshot will notice the payment was touched.
+     */
+    @Transactional
+    public Txn note(String txnId, long expectedVersion, String reason) {
+        validateReason(reason);
+        Txn current = get(txnId);
+        if (current.version() != expectedVersion || txns.touch(txnId, expectedVersion) == 0) {
+            throw new ConcurrentTransitionException(txnId, expectedVersion);
+        }
+        events.insert(txnId, current.state(), current.state(), reason);
+        return get(txnId);
+    }
+
     @Transactional(readOnly = true)
     public Txn get(String txnId) {
         return txns.find(txnId).orElseThrow(() -> new TransactionNotFoundException(txnId));
@@ -115,10 +132,14 @@ public class TransactionService {
         return events.findByTxnId(txnId);
     }
 
-    private Txn apply(Txn current, TxnState newState, String reason) {
+    private static void validateReason(String reason) {
         if (reason == null || reason.isBlank() || reason.length() > 100) {
             throw new IllegalArgumentException("reason must be 1 to 100 characters");
         }
+    }
+
+    private Txn apply(Txn current, TxnState newState, String reason) {
+        validateReason(reason);
         // 1. Is this move in the rulebook?
         TxnStateMachine.check(current.txnId(), current.state(), newState);
 

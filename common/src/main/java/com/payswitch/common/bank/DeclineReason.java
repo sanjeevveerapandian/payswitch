@@ -9,5 +9,7 @@ public enum DeclineReason {
     /** REVERSE for a debit that was itself declined, so there is nothing to undo. */
     ORIGINAL_NOT_SUCCESSFUL,
     /** A DEBIT that arrived after its own REVERSE had already been processed. */
-    ALREADY_REVERSED
+    ALREADY_REVERSED,
+    /** Chaos testing only: the bank said no without even looking at the request. Nothing happened. */
+    SIMULATED_DECLINE
 }

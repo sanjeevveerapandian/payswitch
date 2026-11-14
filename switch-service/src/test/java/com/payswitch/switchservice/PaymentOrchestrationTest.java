@@ -1,7 +1,6 @@
 package com.payswitch.switchservice;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
@@ -13,17 +12,18 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
-import com.payswitch.common.bank.BankResponse;
 import com.payswitch.common.bank.CreditRequest;
 import com.payswitch.common.bank.DebitRequest;
 import com.payswitch.common.bank.DeclineReason;
-import com.payswitch.common.bank.OpType;
 import com.payswitch.common.bank.ReverseRequest;
+import com.payswitch.common.pay.PayState;
 import com.payswitch.common.pay.ReqPay;
 import com.payswitch.common.pay.RespPay;
+import com.payswitch.switchservice.bank.BankCallResult;
 import com.payswitch.switchservice.bank.BankClient;
 import com.payswitch.switchservice.domain.TxnEvent;
 import com.payswitch.switchservice.domain.TxnState;
+import com.payswitch.switchservice.domain.TxnStateMachine;
 import com.payswitch.switchservice.routing.BankRoute;
 import com.payswitch.switchservice.routing.SwitchProperties;
 import com.payswitch.switchservice.service.PaymentOrchestrator;
@@ -37,17 +37,18 @@ import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMock
 import org.springframework.http.MediaType;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
-import org.springframework.web.client.ResourceAccessException;
 
 /**
  * The switch's decisions, with the banks replaced by a fake we script per test
- * ("Bank A says yes, Bank B says no"). Real Postgres, no real HTTP to banks.
+ * ("Bank A says yes, Bank B times out"). Real Postgres, no real HTTP to banks.
  */
 @AutoConfigureMockMvc
 class PaymentOrchestrationTest extends SwitchIntegrationTest {
 
     private static final BankRoute BANK_A = new BankRoute("BANKA", URI.create("http://localhost:8081"));
     private static final BankRoute BANK_B = new BankRoute("BANKB", URI.create("http://localhost:8082"));
+
+    private static final BankCallResult OK = BankCallResult.success();
 
     @MockitoBean
     private BankClient banks;
@@ -65,15 +66,17 @@ class PaymentOrchestrationTest extends SwitchIntegrationTest {
         return new ReqPay(newTxnId(), "ravi@banka", "anu@bankb", 20_000);
     }
 
+    // ---- clear answers (unchanged behaviour from Phase 4) ------------------------------
+
     @Test
     void happyPathDebitsBankAThenCreditsBankB() {
         ReqPay req = raviPaysAnu200();
-        when(banks.debit(any(), any())).thenReturn(BankResponse.success(req.txnId(), OpType.DEBIT));
-        when(banks.credit(any(), any())).thenReturn(BankResponse.success(req.txnId(), OpType.CREDIT));
+        when(banks.debit(any(), any())).thenReturn(OK);
+        when(banks.credit(any(), any())).thenReturn(OK);
 
         RespPay resp = orchestrator.pay(req);
 
-        assertEquals(new RespPay(req.txnId(), "SUCCESS", "CREDIT_OK"), resp);
+        assertEquals(new RespPay(req.txnId(), PayState.SUCCESS, "CREDIT_OK"), resp);
         assertEquals(List.of(TxnState.INITIATED, TxnState.DEBIT_SENT, TxnState.DEBITED,
                 TxnState.CREDIT_SENT, TxnState.SUCCESS), path(req.txnId()));
         verify(banks).debit(BANK_A, new DebitRequest(req.txnId(), "ravi@banka", 20_000));
@@ -87,15 +90,15 @@ class PaymentOrchestrationTest extends SwitchIntegrationTest {
         List<TxnState> stateSeenByBank = new ArrayList<>();
         when(banks.debit(any(), any())).thenAnswer(call -> {
             stateSeenByBank.add(service.get(req.txnId()).state());   // what is in the DB right now?
-            return BankResponse.success(req.txnId(), OpType.DEBIT);
+            return OK;
         });
         when(banks.credit(any(), any())).thenAnswer(call -> {
             stateSeenByBank.add(service.get(req.txnId()).state());
-            return BankResponse.declined(req.txnId(), OpType.CREDIT, DeclineReason.UNKNOWN_VPA, "no such vpa");
+            return BankCallResult.declined(DeclineReason.UNKNOWN_VPA);
         });
         when(banks.reverse(any(), any())).thenAnswer(call -> {
             stateSeenByBank.add(service.get(req.txnId()).state());
-            return BankResponse.success(req.txnId(), OpType.REVERSE);
+            return OK;
         });
 
         orchestrator.pay(req);
@@ -106,12 +109,11 @@ class PaymentOrchestrationTest extends SwitchIntegrationTest {
     @Test
     void debitDeclinedMeansFailedAndBankBIsNeverCalled() {
         ReqPay req = raviPaysAnu200();
-        when(banks.debit(any(), any())).thenReturn(BankResponse.declined(req.txnId(), OpType.DEBIT,
-                DeclineReason.INSUFFICIENT_FUNDS, "Insufficient funds"));
+        when(banks.debit(any(), any())).thenReturn(BankCallResult.declined(DeclineReason.INSUFFICIENT_FUNDS));
 
         RespPay resp = orchestrator.pay(req);
 
-        assertEquals(new RespPay(req.txnId(), "FAILED", "DEBIT_DECLINED:INSUFFICIENT_FUNDS"), resp);
+        assertEquals(new RespPay(req.txnId(), PayState.FAILED, "DEBIT_DECLINED:INSUFFICIENT_FUNDS"), resp);
         assertEquals(List.of(TxnState.INITIATED, TxnState.DEBIT_SENT, TxnState.FAILED), path(req.txnId()));
         verify(banks, never()).credit(any(), any());
         verify(banks, never()).reverse(any(), any());
@@ -120,14 +122,13 @@ class PaymentOrchestrationTest extends SwitchIntegrationTest {
     @Test
     void creditDeclinedMeansThePayerIsRefunded() {
         ReqPay req = raviPaysAnu200();
-        when(banks.debit(any(), any())).thenReturn(BankResponse.success(req.txnId(), OpType.DEBIT));
-        when(banks.credit(any(), any())).thenReturn(BankResponse.declined(req.txnId(), OpType.CREDIT,
-                DeclineReason.UNKNOWN_VPA, "no such vpa"));
-        when(banks.reverse(any(), any())).thenReturn(BankResponse.success(req.txnId(), OpType.REVERSE));
+        when(banks.debit(any(), any())).thenReturn(OK);
+        when(banks.credit(any(), any())).thenReturn(BankCallResult.declined(DeclineReason.UNKNOWN_VPA));
+        when(banks.reverse(any(), any())).thenReturn(OK);
 
         RespPay resp = orchestrator.pay(req);
 
-        assertEquals(new RespPay(req.txnId(), "REVERSED", "REVERSAL_OK"), resp);
+        assertEquals(new RespPay(req.txnId(), PayState.REVERSED, "REVERSAL_OK"), resp);
         assertEquals(List.of(TxnState.INITIATED, TxnState.DEBIT_SENT, TxnState.DEBITED, TxnState.CREDIT_SENT,
                 TxnState.REVERSAL_SENT, TxnState.REVERSED), path(req.txnId()));
         assertEquals("CREDIT_DECLINED:UNKNOWN_VPA", service.history(req.txnId()).get(4).reason());
@@ -135,17 +136,15 @@ class PaymentOrchestrationTest extends SwitchIntegrationTest {
     }
 
     @Test
-    void reversalDeclinedMeansThePayerNeverPaidSoFailed() {
+    void reversalDeclinedBecauseThereWasNoDebitMeansFailed() {
         ReqPay req = raviPaysAnu200();
-        when(banks.debit(any(), any())).thenReturn(BankResponse.success(req.txnId(), OpType.DEBIT));
-        when(banks.credit(any(), any())).thenReturn(BankResponse.declined(req.txnId(), OpType.CREDIT,
-                DeclineReason.UNKNOWN_VPA, "no such vpa"));
-        when(banks.reverse(any(), any())).thenReturn(BankResponse.declined(req.txnId(), OpType.REVERSE,
-                DeclineReason.ORIGINAL_NOT_FOUND, "no debit"));
+        when(banks.debit(any(), any())).thenReturn(OK);
+        when(banks.credit(any(), any())).thenReturn(BankCallResult.declined(DeclineReason.UNKNOWN_VPA));
+        when(banks.reverse(any(), any())).thenReturn(BankCallResult.declined(DeclineReason.ORIGINAL_NOT_FOUND));
 
         RespPay resp = orchestrator.pay(req);
 
-        assertEquals(new RespPay(req.txnId(), "FAILED", "REVERSAL_DECLINED:ORIGINAL_NOT_FOUND"), resp);
+        assertEquals(new RespPay(req.txnId(), PayState.FAILED, "REVERSAL_DECLINED:ORIGINAL_NOT_FOUND"), resp);
     }
 
     @Test
@@ -154,15 +153,15 @@ class PaymentOrchestrationTest extends SwitchIntegrationTest {
 
         RespPay resp = orchestrator.pay(req);
 
-        assertEquals(new RespPay(req.txnId(), "FAILED", "UNKNOWN_HANDLE"), resp);
+        assertEquals(new RespPay(req.txnId(), PayState.FAILED, "UNKNOWN_HANDLE"), resp);
         verify(banks, never()).debit(any(), any());
     }
 
     @Test
     void sameReqPaySentTwiceRunsThePaymentOnce() {
         ReqPay req = raviPaysAnu200();
-        when(banks.debit(any(), any())).thenReturn(BankResponse.success(req.txnId(), OpType.DEBIT));
-        when(banks.credit(any(), any())).thenReturn(BankResponse.success(req.txnId(), OpType.CREDIT));
+        when(banks.debit(any(), any())).thenReturn(OK);
+        when(banks.credit(any(), any())).thenReturn(OK);
 
         RespPay first = orchestrator.pay(req);
         RespPay second = orchestrator.pay(req);
@@ -173,16 +172,78 @@ class PaymentOrchestrationTest extends SwitchIntegrationTest {
         assertEquals(5, service.history(req.txnId()).size());
     }
 
-    /** Phase 4 does not recover from this yet; the test pins down what is left behind. */
+    // ---- UNKNOWN: no clear answer from a bank (new in Phase 5) -------------------------
+
+    /**
+     * Replaces Phase 4's "if the bank call throws, the payment stays in DEBIT_SENT". BankClient
+     * no longer throws; it answers UNKNOWN, and the switch records it and says PENDING.
+     */
     @Test
-    void ifTheBankCallThrowsThePaymentStaysInItsSentState() {
+    void unknownDebitStaysInDebitSentAndThePayerIsToldPending() {
         ReqPay req = raviPaysAnu200();
-        when(banks.debit(any(), any())).thenThrow(new ResourceAccessException("Read timed out"));
+        when(banks.debit(any(), any())).thenReturn(BankCallResult.unknown("timeout"));
 
-        assertThrows(ResourceAccessException.class, () -> orchestrator.pay(req));
+        RespPay resp = orchestrator.pay(req);
 
-        assertEquals(TxnState.DEBIT_SENT, service.get(req.txnId()).state());   // "outcome unknown"
+        assertEquals(new RespPay(req.txnId(), PayState.PENDING, "DEBIT_UNKNOWN: timeout"), resp);
+        assertEquals(TxnState.DEBIT_SENT, service.get(req.txnId()).state());
+        TxnEvent note = last(req.txnId());
+        assertEquals(TxnState.DEBIT_SENT, note.fromState());     // a note, not a move
+        assertEquals(TxnState.DEBIT_SENT, note.toState());
+        verify(banks, never()).credit(any(), any());              // never pay out on a maybe
+        verify(banks, never()).reverse(any(), any());             // never refund on a maybe either
     }
+
+    @Test
+    void unknownCreditStaysInCreditSentWithoutReversing() {
+        ReqPay req = raviPaysAnu200();
+        when(banks.debit(any(), any())).thenReturn(OK);
+        when(banks.credit(any(), any())).thenReturn(BankCallResult.unknown("HTTP 500"));
+
+        RespPay resp = orchestrator.pay(req);
+
+        assertEquals(new RespPay(req.txnId(), PayState.PENDING, "CREDIT_UNKNOWN: HTTP 500"), resp);
+        assertEquals(TxnState.CREDIT_SENT, service.get(req.txnId()).state());
+        // Anu MAY have the money. A reversal now could pay Rs 200 out twice.
+        verify(banks, never()).reverse(any(), any());
+    }
+
+    @Test
+    void unknownReversalStaysInReversalSent() {
+        ReqPay req = raviPaysAnu200();
+        when(banks.debit(any(), any())).thenReturn(OK);
+        when(banks.credit(any(), any())).thenReturn(BankCallResult.declined(DeclineReason.UNKNOWN_VPA));
+        when(banks.reverse(any(), any())).thenReturn(BankCallResult.unknown("connection refused"));
+
+        RespPay resp = orchestrator.pay(req);
+
+        assertEquals(new RespPay(req.txnId(), PayState.PENDING, "REVERSAL_UNKNOWN: connection refused"), resp);
+        assertEquals(TxnState.REVERSAL_SENT, service.get(req.txnId()).state());
+    }
+
+    /** A "no" that does not say "there was no debit" does not prove Ravi has his money back. */
+    @Test
+    void reversalDeclinedForAnyOtherReasonStaysInReversalSent() {
+        ReqPay req = raviPaysAnu200();
+        when(banks.debit(any(), any())).thenReturn(OK);
+        when(banks.credit(any(), any())).thenReturn(BankCallResult.declined(DeclineReason.UNKNOWN_VPA));
+        when(banks.reverse(any(), any())).thenReturn(BankCallResult.declined(DeclineReason.SIMULATED_DECLINE));
+
+        RespPay resp = orchestrator.pay(req);
+
+        assertEquals(new RespPay(req.txnId(), PayState.PENDING, "REVERSAL_DECLINED: SIMULATED_DECLINE"), resp);
+        assertEquals(TxnState.REVERSAL_SENT, service.get(req.txnId()).state());
+    }
+
+    @Test
+    void customerSeesPendingForEveryUnfinishedStateAndAFinalAnswerOnlyForTerminalOnes() {
+        for (TxnState state : TxnState.values()) {
+            PayState shown = PayState.fromSwitchState(state.name());
+            assertEquals(TxnStateMachine.isTerminal(state), shown != PayState.PENDING, state.name());
+        }
+    }
+
+    // ---- config and HTTP ---------------------------------------------------------------
 
     @Test
     void bankCallTimeoutsComeFromConfig() {
@@ -193,8 +254,8 @@ class PaymentOrchestrationTest extends SwitchIntegrationTest {
     @Test
     void httpPayAndTxnLookup() throws Exception {
         ReqPay req = raviPaysAnu200();
-        when(banks.debit(any(), any())).thenReturn(BankResponse.success(req.txnId(), OpType.DEBIT));
-        when(banks.credit(any(), any())).thenReturn(BankResponse.success(req.txnId(), OpType.CREDIT));
+        when(banks.debit(any(), any())).thenReturn(OK);
+        when(banks.credit(any(), any())).thenReturn(OK);
 
         mvc.perform(post("/pay").contentType(MediaType.APPLICATION_JSON).content("""
                         {"txnId": "%s", "payerVpa": "ravi@banka", "payeeVpa": "anu@bankb", "amount": 20000}
@@ -216,6 +277,25 @@ class PaymentOrchestrationTest extends SwitchIntegrationTest {
     }
 
     @Test
+    void httpPayWithAnUnknownDebitAnswersPendingAndTheHistoryShowsWhy() throws Exception {
+        ReqPay req = raviPaysAnu200();
+        when(banks.debit(any(), any())).thenReturn(BankCallResult.unknown("timeout"));
+
+        mvc.perform(post("/pay").contentType(MediaType.APPLICATION_JSON).content("""
+                        {"txnId": "%s", "payerVpa": "ravi@banka", "payeeVpa": "anu@bankb", "amount": 20000}
+                        """.formatted(req.txnId())))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.state").value("PENDING"))
+                .andExpect(jsonPath("$.reason").value("DEBIT_UNKNOWN: timeout"));
+
+        mvc.perform(get("/txns/" + req.txnId()))
+                .andExpect(jsonPath("$.state").value("DEBIT_SENT"))
+                .andExpect(jsonPath("$.events[2].fromState").value("DEBIT_SENT"))
+                .andExpect(jsonPath("$.events[2].toState").value("DEBIT_SENT"))
+                .andExpect(jsonPath("$.events[2].reason").value("DEBIT_UNKNOWN: timeout"));
+    }
+
+    @Test
     void httpErrorsAreClear() throws Exception {
         mvc.perform(post("/pay").contentType(MediaType.APPLICATION_JSON).content("""
                         {"txnId": "t-bad-vpa", "payerVpa": "ravi", "payeeVpa": "anu@bankb", "amount": 20000}
@@ -232,5 +312,10 @@ class PaymentOrchestrationTest extends SwitchIntegrationTest {
     /** The states this payment passed through, in order. */
     private List<TxnState> path(String txnId) {
         return service.history(txnId).stream().map(TxnEvent::toState).toList();
+    }
+
+    private TxnEvent last(String txnId) {
+        List<TxnEvent> events = service.history(txnId);
+        return events.get(events.size() - 1);
     }
 }

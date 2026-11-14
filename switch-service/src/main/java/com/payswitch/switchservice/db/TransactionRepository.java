@@ -64,6 +64,23 @@ public class TransactionRepository {
                 .update();
     }
 
+    /**
+     * Same optimistic lock, but the state stays as it is. Used when something worth recording
+     * happened (e.g. a bank call came back UNKNOWN) without a state change.
+     *
+     * @return rows updated: 1 = we won, 0 = someone else got there first
+     */
+    public int touch(String txnId, long expectedVersion) {
+        return jdbc.sql("""
+                UPDATE transactions
+                SET version = version + 1, updated_at = now()
+                WHERE txn_id = :txnId AND version = :expectedVersion
+                """)
+                .param("txnId", txnId)
+                .param("expectedVersion", expectedVersion)
+                .update();
+    }
+
     private static Txn map(ResultSet rs, int rowNum) throws SQLException {
         return new Txn(
                 rs.getString("txn_id"),

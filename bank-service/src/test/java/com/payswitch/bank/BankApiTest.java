@@ -67,6 +67,14 @@ class BankApiTest extends BankIntegrationTest {
                 http.getForEntity("/accounts/nobody@banka/balance", String.class).getStatusCode());
     }
 
+    /** This test context runs WITHOUT the "chaos" profile, so the chaos endpoints do not exist. */
+    @Test
+    void chaosEndpointsAre404WhenTheChaosProfileIsOff() {
+        assertEquals(HttpStatus.NOT_FOUND, http.getForEntity("/admin/chaos", String.class).getStatusCode());
+        assertEquals(HttpStatus.NOT_FOUND, post("/admin/chaos", """
+                {"errorRate": 1.0}""", String.class).getStatusCode());
+    }
+
     private <T> ResponseEntity<T> post(String path, String json, Class<T> type) {
         HttpHeaders headers = new HttpHeaders();
         headers.setContentType(MediaType.APPLICATION_JSON);

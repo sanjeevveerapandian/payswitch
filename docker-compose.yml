@@ -42,6 +42,8 @@ services:
     image: payswitch/bank-service
     environment:
       BANK_CODE: BANKA
+      # Chaos is switched ON but set to zero: /admin/chaos exists, every rate starts at 0.
+      SPRING_PROFILES_ACTIVE: chaos
       PORT: 8081
       DB_URL: jdbc:postgresql://postgres:5432/banka
     ports:
@@ -58,6 +60,7 @@ services:
     image: payswitch/bank-service
     environment:
       BANK_CODE: BANKB
+      SPRING_PROFILES_ACTIVE: chaos
       PORT: 8082
       DB_URL: jdbc:postgresql://postgres:5432/bankb
     ports:

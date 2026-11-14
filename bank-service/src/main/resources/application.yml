@@ -1,6 +1,10 @@
 # One app, two banks: start it with BANK_CODE=BANKA or BANK_CODE=BANKB.
 bank:
   code: ${BANK_CODE:BANKA}
+  chaos:
+    # Only used with the "chaos" profile. A dropped response stays silent this long, which
+    # must be longer than the switch's read timeout (5s) so the switch gives up first.
+    drop-response-sleep: 8s
 
 server:
   port: ${PORT:8081}
@@ -15,6 +19,11 @@ spring:
   flyway:
     # Shared schema for every bank, plus seed customers for THIS bank only.
     locations: classpath:db/bank/migration,classpath:db/bank/seed/${bank.code}
+  web:
+    resources:
+      # The bank serves no static files. Without this, a POST to an unknown URL (like
+      # /admin/chaos when chaos is off) would answer 405 instead of a clear 404.
+      add-mappings: false
 
 # Only the health endpoint is exposed: GET /actuator/health
 management:

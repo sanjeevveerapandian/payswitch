@@ -106,6 +106,28 @@ class TransitionsInDatabaseTest extends SwitchIntegrationTest {
     }
 
     @Test
+    void aNoteAddsOneEventAndBumpsTheVersionButNeverChangesTheState() {
+        Txn txn = paymentIn(TxnState.DEBIT_SENT);
+        int eventsBefore = service.history(txn.txnId()).size();
+
+        Txn after = service.note(txn.txnId(), txn.version(), "DEBIT_UNKNOWN: timeout");
+
+        assertEquals(TxnState.DEBIT_SENT, after.state());
+        assertEquals(txn.version() + 1, after.version());
+        List<TxnEvent> events = service.history(txn.txnId());
+        assertEquals(eventsBefore + 1, events.size());
+        TxnEvent note = events.get(events.size() - 1);
+        assertEquals(TxnState.DEBIT_SENT, note.fromState());
+        assertEquals(TxnState.DEBIT_SENT, note.toState());
+        assertEquals("DEBIT_UNKNOWN: timeout", note.reason());
+
+        // A note made from an old snapshot is refused, just like a stale transition.
+        assertThrows(com.payswitch.switchservice.service.ConcurrentTransitionException.class,
+                () -> service.note(txn.txnId(), txn.version(), "stale note"));
+        assertEquals(eventsBefore + 1, service.history(txn.txnId()).size());
+    }
+
+    @Test
     void transitionOfUnknownTxnIsRejected() {
         assertThrows(TransactionNotFoundException.class,
                 () -> service.transition(newTxnId(), TxnState.DEBIT_SENT, "x"));
