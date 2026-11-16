@@ -180,6 +180,7 @@ final class PaymentSystem implements AutoCloseable {
         List<String> all = new ArrayList<>(args);
         all.add("--server.port=" + port);
         all.add("--spring.main.banner-mode=off");
+        all.add("--spring.jackson.deserialization.accept-float-as-int=false");   // as in every application.yml
         return new SpringApplicationBuilder(app).run(all.toArray(String[]::new));
     }
 

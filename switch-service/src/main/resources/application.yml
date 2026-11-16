@@ -10,6 +10,11 @@ spring:
     password: ${DB_PASSWORD:payswitch}
   flyway:
     locations: classpath:db/switch/migration
+  jackson:
+    deserialization:
+      # Amounts are whole paise. By default Jackson turns 20000.9 into 20000 without a word.
+      # Off: a decimal amount is a 400, never a quietly different amount of money.
+      accept-float-as-int: false
 
 switch:
   # Every call to a bank gives up after these limits instead of waiting forever.
@@ -31,6 +36,7 @@ switch:
     batch-size: 10        # stuck payments claimed per batch
     lease: 60s            # a claimed payment is off limits to other resolvers for this long
     run-on-startup: true  # crash recovery
+    deemed-recheck-after: 5m   # DEEMED_APPROVED payments are checked again this often
   # VPA routing: the handle after the @ decides the bank.
   #   ravi@banka -> handle "banka" -> Bank A
   banks:

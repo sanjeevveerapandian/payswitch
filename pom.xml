@@ -113,5 +113,40 @@
                 </plugin>
             </plugins>
         </pluginManagement>
+
+        <plugins>
+            <!-- Test coverage. "prepare-agent" watches which lines run while the tests run;
+                 "report" writes target/site/jacoco/index.html (and jacoco.csv / jacoco.xml)
+                 for each module, right after `mvn test`. -->
+            <plugin>
+                <groupId>org.jacoco</groupId>
+                <artifactId>jacoco-maven-plugin</artifactId>
+                <version>0.8.16</version>
+                <configuration>
+                    <excludes>
+                        <!-- Wiring, not logic: nothing worth measuring here. -->
+                        <exclude>**/*Application.class</exclude>
+                        <exclude>**/*Properties.class</exclude>
+                        <exclude>**/*Properties$*.class</exclude>
+                        <exclude>**/*Config.class</exclude>
+                    </excludes>
+                </configuration>
+                <executions>
+                    <execution>
+                        <id>prepare-agent</id>
+                        <goals>
+                            <goal>prepare-agent</goal>
+                        </goals>
+                    </execution>
+                    <execution>
+                        <id>report</id>
+                        <phase>test</phase>
+                        <goals>
+                            <goal>report</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
     </build>
 </project>

@@ -19,6 +19,11 @@ spring:
   flyway:
     # Shared schema for every bank, plus seed customers for THIS bank only.
     locations: classpath:db/bank/migration,classpath:db/bank/seed/${bank.code}
+  jackson:
+    deserialization:
+      # Amounts are whole paise. By default Jackson turns 20000.9 into 20000 without a word.
+      # Off: a decimal amount is a 400, never a quietly different amount of money.
+      accept-float-as-int: false
   web:
     resources:
       # The bank serves no static files. Without this, a POST to an unknown URL (like

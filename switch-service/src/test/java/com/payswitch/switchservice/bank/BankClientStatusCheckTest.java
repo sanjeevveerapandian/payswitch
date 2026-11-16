@@ -110,6 +110,28 @@ class BankClientStatusCheckTest {
         assertEquals("HTTP 500", client.statusCheckAndFence(bank, "T1", OpType.DEBIT).detail());
     }
 
+    /** A status check that cannot even reach the bank is NOT a "no": it must stay UNKNOWN. */
+    @Test
+    void aStatusCheckThatCannotConnectIsUnknown() throws Exception {
+        int closedPort;
+        try (java.net.ServerSocket s = new java.net.ServerSocket(0)) {
+            closedPort = s.getLocalPort();
+        }
+        BankRoute down = new BankRoute("BANKA", URI.create("http://localhost:" + closedPort));
+
+        BankCallResult r = client.statusCheckAndFence(down, "T1", OpType.DEBIT);
+
+        assertEquals(BankCallOutcome.UNKNOWN, r.outcome());
+        assertEquals("connection refused", r.detail());
+    }
+
+    @Test
+    void aStatusCheckWithAnEmptyBodyIsUnknown() {
+        answer.set("");
+
+        assertEquals(BankCallOutcome.UNKNOWN, client.statusCheckAndFence(bank, "T1", OpType.DEBIT).outcome());
+    }
+
     @Test
     void anAnswerAboutAnotherOperationIsUnknown() {
         answer.set(check("FOUND", saved("SUCCESS", null)));        // about DEBIT

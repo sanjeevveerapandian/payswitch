@@ -19,6 +19,8 @@ import com.payswitch.switchservice.routing.BankRouter;
 import com.payswitch.switchservice.routing.Vpa;
 import java.util.EnumSet;
 import java.util.Set;
+import java.util.function.Predicate;
+import java.util.function.Supplier;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -44,6 +46,18 @@ public class PaymentFlow {
     /** States that mean "a request went out and we are waiting to learn what happened". */
     public static final Set<TxnState> RESOLVABLE =
             EnumSet.of(TxnState.DEBIT_SENT, TxnState.CREDIT_SENT, TxnState.REVERSAL_SENT);
+
+    /**
+     * Everything the background job must pick up if it has not moved for a while: the RESOLVABLE
+     * states, plus
+     * <ul>
+     *   <li>DEBITED: a crash between saving DEBITED and saving CREDIT_SENT leaves the payer's money
+     *       in transit with nobody carrying it on;</li>
+     *   <li>INITIATED: a crash right after create() leaves a payment no bank has ever heard of.</li>
+     * </ul>
+     */
+    public static final Set<TxnState> STUCK = EnumSet.of(TxnState.INITIATED, TxnState.DEBIT_SENT,
+            TxnState.DEBITED, TxnState.CREDIT_SENT, TxnState.REVERSAL_SENT);
 
     /** Decline reasons on a REVERSE that prove the payer's money never left. */
     private static final Set<DeclineReason> NOTHING_TO_REVERSE =
@@ -140,11 +154,16 @@ public class PaymentFlow {
             for (int step = 0; step < 10; step++) {          // a payment needs at most ~5 steps
                 Txn txn = txns.get(txnId);
                 Txn after = switch (txn.state()) {
+                    // DEBIT_SENT is saved BEFORE the debit goes out, so INITIATED means no bank was
+                    // ever asked. Nothing can have moved: close it. (If the original thread is somehow
+                    // still alive, its next move fails on the version check and it stops.)
+                    case INITIATED -> move(txn, TxnState.FAILED, "NEVER_SENT");
                     case DEBIT_SENT -> resolveDebit(txn);
                     case DEBITED -> sendCredit(txn);          // e.g. crashed between DEBITED and CREDIT_SENT
                     case CREDIT_SENT -> resolveCredit(txn);
                     case REVERSAL_SENT -> resolveReversal(txn);
-                    default -> null;                          // final, DEEMED_APPROVED, or not started
+                    case DEEMED_APPROVED -> recheckDeemed(txn);
+                    default -> null;                          // final: nothing to do
                 };
                 if (after == null || after.state() == txn.state()) {
                     return;                                   // done, or nothing more to do right now
@@ -152,7 +171,30 @@ public class PaymentFlow {
             }
         } catch (ConcurrentTransitionException someoneElse) {
             log.info("Txn {}: changed by another resolver while we worked on it; leaving it to them.", txnId);
+        } catch (Interrupted stop) {
+            // The interrupt flag stays set for whoever called us.
+            log.info("Txn {}: interrupted (shutting down?). Left as it was; it will be resolved after restart.", txnId);
         }
+    }
+
+    /** Thrown when the thread is interrupted mid-retries: stop, decide nothing. */
+    private static final class Interrupted extends RuntimeException {
+        Interrupted() {
+            super(null, null, false, false);
+        }
+    }
+
+    /**
+     * Asks the bank, with retries. If the retries were cut short by an interrupt (the switch is
+     * shutting down), the last UNKNOWN is NOT evidence that the bank stopped answering: it only means
+     * we stopped asking. So we refuse to return it, and nobody gets to decide on it.
+     */
+    private BankCallResult askWithRetries(Supplier<BankCallResult> call, Predicate<BankCallResult> done) {
+        BankCallResult result = retrier.run(call, done);
+        if (Thread.currentThread().isInterrupted()) {
+            throw new Interrupted();
+        }
+        return result;
     }
 
     /**
@@ -166,7 +208,7 @@ public class PaymentFlow {
      * </ul>
      */
     private Txn resolveDebit(Txn txn) {
-        BankCallResult check = retrier.run(
+        BankCallResult check = askWithRetries(
                 () -> banks.statusCheckAndFence(payerBank(txn), txn.txnId(), OpType.DEBIT),
                 r -> r.outcome() != UNKNOWN);
         return switch (check.outcome()) {
@@ -190,7 +232,7 @@ public class PaymentFlow {
      * </ul>
      */
     private Txn resolveCredit(Txn txn) {
-        BankCallResult check = retrier.run(
+        BankCallResult check = askWithRetries(
                 () -> banks.statusCheckAndFence(payeeBank(txn), txn.txnId(), OpType.CREDIT),
                 r -> r.outcome() != UNKNOWN);
         return switch (check.outcome()) {
@@ -205,11 +247,36 @@ public class PaymentFlow {
     }
 
     /**
+     * DEEMED_APPROVED, checked again later (the payee's bank may be reachable now). Same question
+     * as before, with fencing, but now every answer is safe to act on:
+     * <ul>
+     *   <li>the credit happened -> SUCCESS</li>
+     *   <li>it never happened, and the fence now guarantees it never will -> REVERSAL_SENT. Refunding
+     *       Ravi is safe at this point: Anu cannot also receive the money.</li>
+     *   <li>still no answer -> stay parked. Still never reverse on a guess.</li>
+     * </ul>
+     */
+    private Txn recheckDeemed(Txn txn) {
+        BankCallResult check = askWithRetries(
+                () -> banks.statusCheckAndFence(payeeBank(txn), txn.txnId(), OpType.CREDIT),
+                r -> r.outcome() != UNKNOWN);
+        return switch (check.outcome()) {
+            case SUCCESS -> move(txn, TxnState.SUCCESS, "CREDIT_CONFIRMED_BY_STATUS");
+            case DECLINED -> move(txn, TxnState.REVERSAL_SENT, "CREDIT_DECLINED:" + check.detail());
+            case UNKNOWN -> {
+                log.info("Txn {}: still DEEMED_APPROVED, payee bank still not answering ({}). Will check again later.",
+                        txn.txnId(), check.detail());
+                yield txn;                                    // no change; the job's lease sets the next check
+            }
+        };
+    }
+
+    /**
      * Keep asking the payer's bank to reverse until it confirms. /reverse is idempotent, so sending
      * it again never refunds twice: a repeat just gets the saved answer back.
      */
     private Txn resolveReversal(Txn txn) {
-        BankCallResult reversal = retrier.run(
+        BankCallResult reversal = askWithRetries(
                 () -> banks.reverse(payerBank(txn), new ReverseRequest(txn.txnId())),
                 this::isFinalReversal);
         if (isFinalReversal(reversal)) {

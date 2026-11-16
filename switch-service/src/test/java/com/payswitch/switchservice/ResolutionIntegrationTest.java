@@ -29,6 +29,7 @@ import org.springframework.test.context.bean.override.mockito.MockitoBean;
         "switch.resolution.batch-size=3",
         "switch.resolution.lease=300ms",
         "switch.resolution.run-on-startup=false",
+        "switch.resolution.deemed-recheck-after=0s",
         "switch.retry.base-delay=10ms",
         "switch.retry.multiplier=2",
         "switch.retry.jitter=0.2",

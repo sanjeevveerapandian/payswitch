@@ -6,6 +6,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.payswitch.common.bank.DeclineReason;
@@ -95,6 +97,88 @@ class ResolverJobTest extends ResolutionIntegrationTest {
             assertEquals(1, checksPerTxn.get(id).get(), "bank asked about " + id);
             assertEquals(TxnState.FAILED, service.get(id).state());
         }
+    }
+
+    /**
+     * Review finding #2: DEBITED and CREDIT_SENT are saved in two separate transactions. A crash in
+     * between leaves the payment in DEBITED: Ravi has paid, Anu has nothing. The job must finish it.
+     */
+    @Test
+    void aPaymentLeftInDebitedByACrashIsFinished() {
+        String id = stuckInDebitSent();
+        Txn txn = service.get(id);
+        service.transition(id, txn.version(), TxnState.DEBITED, "DEBIT_OK");          // ...then the crash
+        when(banks.credit(any(), any())).thenReturn(BankCallResult.success());
+
+        List<String> handled = job.runOnce();
+
+        assertTrue(handled.contains(id), "the job did not even pick it up");
+        assertEquals(TxnState.SUCCESS, service.get(id).state());
+    }
+
+    /**
+     * Review finding #4: a crash right after create() leaves the payment in INITIATED. DEBIT_SENT is
+     * always saved BEFORE the debit is sent, so INITIATED proves no bank was ever asked: closing it
+     * as FAILED is safe, and no bank must be called to do it.
+     */
+    @Test
+    void aPaymentLeftInInitiatedByACrashIsClosedAsNeverSent() {
+        String id = "TXN-" + UUID.randomUUID();
+        service.create(id, "ravi@banka", "anu@bankb", 20_000);                        // ...then the crash
+
+        List<String> handled = job.runOnce();
+
+        assertTrue(handled.contains(id), "the job did not even pick it up");
+        assertEquals(TxnState.FAILED, service.get(id).state());
+        assertEquals("NEVER_SENT", service.history(id).get(service.history(id).size() - 1).reason());
+        verify(banks, never()).debit(any(), any());
+        verify(banks, never()).statusCheckAndFence(any(), eq(id), any());
+    }
+
+    // ---- review finding #3: DEEMED_APPROVED is checked again later, not parked forever --------
+
+    /** Walks a payment to DEEMED_APPROVED: Ravi debited, Anu's bank never gave a clear answer. */
+    private String deemedApproved() {
+        String id = stuckInDebitSent();
+        for (TxnState next : List.of(TxnState.DEBITED, TxnState.CREDIT_SENT, TxnState.DEEMED_APPROVED)) {
+            service.transition(id, service.get(id).version(), next, "test setup");
+        }
+        return id;
+    }
+
+    /** Anu's bank is back and fences the credit: it never happened, so now refunding Ravi is SAFE. */
+    @Test
+    void deemedApprovedWhoseCreditNeverHappenedIsReversedOnceTheBankFencesIt() {
+        String id = deemedApproved();
+        when(banks.statusCheckAndFence(any(), eq(id), eq(OpType.CREDIT)))
+                .thenReturn(BankCallResult.declined(DeclineReason.FENCED));
+        when(banks.reverse(any(), any())).thenReturn(BankCallResult.success());
+
+        job.runOnce();
+
+        assertEquals(TxnState.REVERSED, service.get(id).state());
+    }
+
+    @Test
+    void deemedApprovedWhoseCreditDidHappenBecomesSuccess() {
+        String id = deemedApproved();
+        when(banks.statusCheckAndFence(any(), eq(id), eq(OpType.CREDIT))).thenReturn(BankCallResult.success());
+
+        job.runOnce();
+
+        assertEquals(TxnState.SUCCESS, service.get(id).state());
+        verify(banks, never()).reverse(any(), any());
+    }
+
+    @Test
+    void deemedApprovedStillUnknownStaysParkedAndIsNeverReversed() {
+        String id = deemedApproved();
+        when(banks.statusCheckAndFence(any(), eq(id), eq(OpType.CREDIT))).thenReturn(BankCallResult.unknown("HTTP 500"));
+
+        job.runOnce();
+
+        assertEquals(TxnState.DEEMED_APPROVED, service.get(id).state());
+        verify(banks, never()).reverse(any(), any());
     }
 
     @Test

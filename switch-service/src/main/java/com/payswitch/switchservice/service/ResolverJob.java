@@ -1,7 +1,11 @@
 package com.payswitch.switchservice.service;
 
+import com.payswitch.switchservice.domain.TxnState;
+import java.time.Duration;
 import java.util.ArrayList;
+import java.util.EnumSet;
 import java.util.List;
+import java.util.Set;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
@@ -10,8 +14,10 @@ import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
 /**
- * The safety net. Every few seconds, and once at startup, it finds payments stuck in DEBIT_SENT,
- * CREDIT_SENT or REVERSAL_SENT and resolves them with the same logic POST /pay uses.
+ * The safety net. Every few seconds, and once at startup, it finds payments stuck in INITIATED,
+ * DEBIT_SENT, DEBITED, CREDIT_SENT or REVERSAL_SENT and resolves them with the same logic
+ * POST /pay uses. Much less often, it also checks DEEMED_APPROVED payments again with the
+ * payee's bank.
  *
  * <p>Startup matters: if the switch crashed mid-payment, nothing else would ever look at that
  * payment again. Running once on startup is the crash recovery.
@@ -57,15 +63,30 @@ public class ResolverJob {
      */
     public List<String> runOnce() {
         List<String> handled = new ArrayList<>();
+        // Unfinished payments: every few seconds once they have been quiet for stuck-after.
+        handled.addAll(claimAndResolve(PaymentFlow.STUCK, props.stuckAfter(), props.lease()));
+        // DEEMED_APPROVED: much less often. The lease doubles as the wait until the next check.
+        Duration recheck = props.deemedRecheckAfter();
+        Duration deemedLease = recheck.compareTo(props.lease()) > 0 ? recheck : props.lease();
+        handled.addAll(claimAndResolve(EnumSet.of(TxnState.DEEMED_APPROVED), recheck, deemedLease));
+        return handled;
+    }
+
+    private List<String> claimAndResolve(Set<TxnState> states, Duration quietFor, Duration lease) {
+        List<String> handled = new ArrayList<>();
         for (int batchNo = 0; batchNo < MAX_BATCHES_PER_RUN; batchNo++) {
             // Short transaction: lock a few rows (skipping any another resolver holds), lease them, commit.
-            List<String> batch = txns.claimStuck(PaymentFlow.RESOLVABLE, props.stuckAfter(), props.batchSize(),
-                    props.lease());
+            List<String> batch = txns.claimStuck(states, quietFor, props.batchSize(), lease);
             if (batch.isEmpty()) {
                 break;
             }
             // No transaction here: resolving calls banks over HTTP.
             for (String txnId : batch) {
+                if (Thread.currentThread().isInterrupted()) {
+                    // Shutting down: stop. Claimed-but-untouched payments are picked up again when
+                    // their lease runs out (or by the startup run after the restart).
+                    return handled;
+                }
                 try {
                     flow.resolve(txnId);
                 } catch (RuntimeException e) {

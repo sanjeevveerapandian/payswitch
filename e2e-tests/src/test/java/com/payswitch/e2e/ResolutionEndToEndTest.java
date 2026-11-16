@@ -18,6 +18,7 @@ import com.payswitch.common.pay.TxnDetails;
 import com.payswitch.common.pay.TxnEventView;
 import com.payswitch.switchservice.domain.Txn;
 import com.payswitch.switchservice.domain.TxnState;
+import com.payswitch.switchservice.service.PaymentFlow;
 import com.payswitch.switchservice.service.TransactionService;
 import java.util.List;
 import java.util.Map;
@@ -188,6 +189,43 @@ class ResolutionEndToEndTest {
         // Where is the Rs 200? With Anu. The payment really did go through.
         assertMovedRaviToAnu();
         assertEquals(TxnStatus.NOT_FOUND, bankStatus(system.bankAUrl(), resp.txnId(), "REVERSE"));
+    }
+
+    // ---- DEEMED_APPROVED, checked again later (review finding #3) ------------------------
+
+    /** Anu's bank was down; later it is back and has no record of the credit. Ravi is refunded. */
+    @Test
+    void deemedApprovedLaterFound_creditNeverHappened_raviRefunded() {
+        system.chaos(system.bankBUrl(), Map.of("errorRate", 1.0, "statusErrorRate", 1.0));
+        RespPay resp = pay("anu@bankb");
+        assertEquals("DEEMED_APPROVED", switchState(resp.txnId()));
+        assertEquals(raviBefore - RS_200, ravi());                        // money in transit
+
+        system.chaosOff();                                                // Bank B is back
+        system.switchBean(PaymentFlow.class).resolve(resp.txnId());       // what the job does later
+
+        assertEquals("REVERSED", switchState(resp.txnId()));
+        // Where is the Rs 200? Back with Ravi; Anu never got it, and the fence means she never will.
+        assertEquals(raviBefore, ravi());
+        assertEquals(anuBefore, anu());
+        assertEquals(DeclineReason.FENCED, creditDirect(resp.txnId()).reason());
+        assertEquals(before, Money.snapshot(system));
+    }
+
+    /** Same, but the credit DID reach Anu: the recheck confirms it and nothing is reversed. */
+    @Test
+    void deemedApprovedLaterFound_creditHappened_success() {
+        system.chaos(system.bankBUrl(), Map.of("dropResponseRate", 1.0, "statusErrorRate", 1.0));
+        RespPay resp = pay("anu@bankb");
+        assertEquals("DEEMED_APPROVED", switchState(resp.txnId()));
+
+        system.chaosOff();
+        system.switchBean(PaymentFlow.class).resolve(resp.txnId());
+
+        assertEquals("SUCCESS", switchState(resp.txnId()));
+        assertEquals(TxnStatus.NOT_FOUND, bankStatus(system.bankAUrl(), resp.txnId(), "REVERSE"));
+        // Where is the Rs 200? With Anu, once.
+        assertMovedRaviToAnu();
     }
 
     // ---- reversal -----------------------------------------------------------------------
