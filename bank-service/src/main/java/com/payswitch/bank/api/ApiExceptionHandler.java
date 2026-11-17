@@ -34,6 +34,12 @@ public class ApiExceptionHandler {
         return ProblemDetail.forStatusAndDetail(HttpStatus.NOT_FOUND, e.getMessage());
     }
 
+    /** Bad recon query (e.g. from after to, page size too big). */
+    @ExceptionHandler(IllegalArgumentException.class)
+    public ProblemDetail badArgument(IllegalArgumentException e) {
+        return ProblemDetail.forStatusAndDetail(HttpStatus.BAD_REQUEST, e.getMessage());
+    }
+
     /** Chaos chose ERROR. A real bank's 500 looks the same from outside. */
     @ExceptionHandler(ChaosFailureException.class)
     public ProblemDetail chaosFailure(ChaosFailureException e) {

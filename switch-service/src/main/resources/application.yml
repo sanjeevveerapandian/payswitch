@@ -37,6 +37,14 @@ switch:
     lease: 60s            # a claimed payment is off limits to other resolvers for this long
     run-on-startup: true  # crash recovery
     deemed-recheck-after: 5m   # DEEMED_APPROVED payments are checked again this often
+  # Reconciliation: compare the switch's books with the banks' books, window by window.
+  recon:
+    enabled: true
+    cutoff: 5m            # leave payments younger than this alone: they may still be in flight
+    interval: 10m         # the job reconciles one 10-minute window every 10 minutes
+    bank-clock-slack: 5m  # read bank entries this much beyond the window on both sides
+    page-size: 500        # /recon/entries page size
+    run-lease: 30m        # a crashed run's window can be taken over after this
   # VPA routing: the handle after the @ decides the bank.
   #   ravi@banka -> handle "banka" -> Bank A
   banks:

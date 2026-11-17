@@ -5,10 +5,14 @@ import com.payswitch.switchservice.domain.TxnState;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.time.Duration;
+import java.time.Instant;
 import java.time.OffsetDateTime;
+import java.time.ZoneOffset;
 import java.util.Collection;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Repository;
 
@@ -127,6 +131,49 @@ public class TransactionRepository {
                 .param("lease", lease.toMillis() / 1000.0)
                 .param("txnId", txnId)
                 .update();
+    }
+
+    /**
+     * Payments created in [from, to) that are at least {@code cutoff} old (by the database clock,
+     * the same clock that stamped created_at). Oldest first.
+     */
+    public List<Txn> createdBetween(Instant from, Instant to, Duration cutoff) {
+        return jdbc.sql("""
+                SELECT * FROM transactions
+                WHERE created_at >= :from AND created_at < :to
+                  AND created_at < now() - make_interval(secs => :cutoff)
+                ORDER BY created_at, txn_id
+                """)
+                .param("from", OffsetDateTime.ofInstant(from, ZoneOffset.UTC))
+                .param("to", OffsetDateTime.ofInstant(to, ZoneOffset.UTC))
+                .param("cutoff", cutoff.toMillis() / 1000.0)
+                .query(TransactionRepository::map)
+                .list();
+    }
+
+    /** How many payments in [from, to) are still younger than {@code cutoff}. */
+    public int countTooRecent(Instant from, Instant to, Duration cutoff) {
+        return jdbc.sql("""
+                SELECT COUNT(*) FROM transactions
+                WHERE created_at >= :from AND created_at < :to
+                  AND created_at >= now() - make_interval(secs => :cutoff)
+                """)
+                .param("from", OffsetDateTime.ofInstant(from, ZoneOffset.UTC))
+                .param("to", OffsetDateTime.ofInstant(to, ZoneOffset.UTC))
+                .param("cutoff", cutoff.toMillis() / 1000.0)
+                .query(Integer.class)
+                .single();
+    }
+
+    /** Which of these txnIds the switch knows at all (whatever their state or age). */
+    public Set<String> existing(Collection<String> txnIds) {
+        if (txnIds.isEmpty()) {
+            return Set.of();
+        }
+        return new HashSet<>(jdbc.sql("SELECT txn_id FROM transactions WHERE txn_id IN (:ids)")
+                .param("ids", txnIds)
+                .query(String.class)
+                .list());
     }
 
     private static Txn map(ResultSet rs, int rowNum) throws SQLException {

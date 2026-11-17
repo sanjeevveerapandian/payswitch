@@ -46,6 +46,9 @@ final class PaymentSystem implements AutoCloseable {
     /** ...and a dropped response stays silent 2 s, so the switch always gives up first. */
     static final String DROP_RESPONSE_SLEEP = "2s";
 
+    /** Reconciliation leaves payments younger than this alone. */
+    static final java.time.Duration RECON_CUTOFF = java.time.Duration.ofSeconds(1);
+
     private static PaymentSystem instance;
 
     private final PostgreSQLContainer<?> postgres =
@@ -150,7 +153,13 @@ final class PaymentSystem implements AutoCloseable {
                 "--switch.resolution.interval=1h",              // tests never wait for the timer
                 "--switch.resolution.batch-size=10",
                 "--switch.resolution.lease=10s",
-                "--switch.resolution.run-on-startup=true");
+                "--switch.resolution.run-on-startup=true",
+                // Reconciliation: tests run it directly (no timer). A 1 s cutoff keeps them fast;
+                // pages of 3 make sure paging through /recon/entries is really exercised.
+                "--switch.recon.enabled=false",
+                "--switch.recon.cutoff=" + RECON_CUTOFF.toMillis() + "ms",
+                "--switch.recon.bank-clock-slack=1m",
+                "--switch.recon.page-size=3");
     }
 
     private static List<String> pspArgs(String switchUrl) {

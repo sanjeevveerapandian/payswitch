@@ -11,9 +11,11 @@ import com.payswitch.switchservice.routing.BankRoute;
 import com.payswitch.switchservice.routing.BankRouter;
 import com.payswitch.switchservice.routing.Vpa;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -136,6 +138,23 @@ public class TransactionService {
     @Transactional
     public void lease(String txnId, Duration lease) {
         txns.lease(txnId, lease);
+    }
+
+    /** For reconciliation: payments created in [from, to) that are at least {@code cutoff} old. */
+    @Transactional(readOnly = true)
+    public List<Txn> createdBetween(Instant from, Instant to, Duration cutoff) {
+        return txns.createdBetween(from, to, cutoff);
+    }
+
+    @Transactional(readOnly = true)
+    public int countTooRecent(Instant from, Instant to, Duration cutoff) {
+        return txns.countTooRecent(from, to, cutoff);
+    }
+
+    /** Which of these txnIds exist in the switch at all. */
+    @Transactional(readOnly = true)
+    public Set<String> existing(Collection<String> txnIds) {
+        return txns.existing(txnIds);
     }
 
     @Transactional(readOnly = true)
