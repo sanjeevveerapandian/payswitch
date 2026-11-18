@@ -17,7 +17,8 @@ class VpaAndRouterTest {
     private final BankRouter router = new BankRouter(new SwitchProperties(
             new SwitchProperties.Http(Duration.ofSeconds(2), Duration.ofSeconds(5)), Map.of(
             "banka", new BankRoute("BANKA", URI.create("http://localhost:8081")),
-            "bankb", new BankRoute("BANKB", URI.create("http://localhost:8082")))));
+            "bankb", new BankRoute("BANKB", URI.create("http://localhost:8082")),
+            "bankc", new BankRoute("BANKC", URI.create("http://localhost:8084")))));
 
     @Test
     void parsesUserAndHandle() {
@@ -50,6 +51,14 @@ class VpaAndRouterTest {
         assertEquals(URI.create("http://localhost:8081"), a.url());
         assertEquals("BANKB", b.code());
         assertEquals(URI.create("http://localhost:8082"), b.url());
+    }
+
+    @Test
+    void thirdBankIsRoutedAndFoundByCode() {
+        assertEquals("BANKC", router.route(Vpa.parse("kumar@bankc")).orElseThrow().code());
+        assertEquals(URI.create("http://localhost:8084"), router.byCode("BANKC").orElseThrow().url());
+        assertTrue(router.byCode("BANKZ").isEmpty());
+        assertEquals(3, router.allBanks().size());
     }
 
     @Test

@@ -25,6 +25,7 @@ import org.testcontainers.utility.DockerImageName;
  * <pre>
  *   PSP      ->  Switch      ->  Bank A
  *                            ->  Bank B        one Postgres container, several databases
+ *                            ->  Bank C
  *   raw PSP  ->  raw Switch  ->  (same banks)
  * </pre>
  *
@@ -57,6 +58,7 @@ final class PaymentSystem implements AutoCloseable {
 
     private ConfigurableApplicationContext bankA;
     private ConfigurableApplicationContext bankB;
+    private ConfigurableApplicationContext bankC;
     private ConfigurableApplicationContext switchApp;
     private ConfigurableApplicationContext psp;
     private ConfigurableApplicationContext rawSwitch;
@@ -87,7 +89,7 @@ final class PaymentSystem implements AutoCloseable {
         try (Connection c = DriverManager.getConnection(
                 postgres.getJdbcUrl(), postgres.getUsername(), postgres.getPassword());
              Statement s = c.createStatement()) {
-            for (String db : List.of("banka", "bankb", "switch", "switch_raw")) {
+            for (String db : List.of("banka", "bankb", "bankc", "switch", "switch_raw")) {
                 s.execute("CREATE DATABASE " + db);
             }
         }
@@ -95,6 +97,7 @@ final class PaymentSystem implements AutoCloseable {
         // Start order = dependency order: banks first, then the switches, then the PSPs.
         bankA = bank("BANKA", "banka");
         bankB = bank("BANKB", "bankb");
+        bankC = bank("BANKC", "bankc");
 
         switchArgs = switchArgs("switch", true);
         switchApp = run(SwitchServiceApplication.class, switchArgs, 0);
@@ -107,7 +110,8 @@ final class PaymentSystem implements AutoCloseable {
         // Warm up: the very first request to a fresh app is slow (connection pools, class
         // loading). Do it now, so no test's first bank call trips the 1 s timeout.
         for (String url : List.of(bankAUrl() + "/accounts/ravi@banka/balance",
-                bankBUrl() + "/accounts/anu@bankb/balance", pspUrl() + "/actuator/health",
+                bankBUrl() + "/accounts/anu@bankb/balance", bankCUrl() + "/accounts/kumar@bankc/balance",
+                pspUrl() + "/actuator/health",
                 switchUrl() + "/actuator/health", rawPspUrl() + "/actuator/health",
                 rawSwitchUrl() + "/actuator/health")) {
             http.get().uri(url).retrieve().toBodilessEntity();
@@ -142,6 +146,8 @@ final class PaymentSystem implements AutoCloseable {
                 "--switch.banks.banka.url=" + bankAUrl(),
                 "--switch.banks.bankb.code=BANKB",
                 "--switch.banks.bankb.url=" + bankBUrl(),
+                "--switch.banks.bankc.code=BANKC",
+                "--switch.banks.bankc.url=" + bankCUrl(),
                 // Fast retries: 50 ms, 100 ms between 3 attempts.
                 "--switch.retry.base-delay=50ms",
                 "--switch.retry.multiplier=2",
@@ -159,7 +165,9 @@ final class PaymentSystem implements AutoCloseable {
                 "--switch.recon.enabled=false",
                 "--switch.recon.cutoff=" + RECON_CUTOFF.toMillis() + "ms",
                 "--switch.recon.bank-clock-slack=1m",
-                "--switch.recon.page-size=3");
+                "--switch.recon.page-size=3",
+                // Settlement: tests close cycles themselves.
+                "--switch.settlement.enabled=false");
     }
 
     private static List<String> pspArgs(String switchUrl) {
@@ -226,6 +234,10 @@ final class PaymentSystem implements AutoCloseable {
         return url(bankB);
     }
 
+    String bankCUrl() {
+        return url(bankC);
+    }
+
     /** A bean from the main switch, e.g. its TransactionService (to set up a "crashed" payment). */
     <T> T switchBean(Class<T> type) {
         return switchApp.getBean(type);
@@ -236,10 +248,11 @@ final class PaymentSystem implements AutoCloseable {
         http.post().uri(bankUrl + "/admin/chaos").body(settings).retrieve().toBodilessEntity();
     }
 
-    /** All rates back to 0 on both banks. */
+    /** All rates back to 0 on every bank. */
     void chaosOff() {
         chaos(bankAUrl(), Map.of());
         chaos(bankBUrl(), Map.of());
+        chaos(bankCUrl(), Map.of());
     }
 
     /** Direct SQL access to a bank's database, for checks no API offers (e.g. total money). */
@@ -251,16 +264,26 @@ final class PaymentSystem implements AutoCloseable {
         return bankB.getBean(JdbcClient.class);
     }
 
+    JdbcClient bankCDb() {
+        return bankC.getBean(JdbcClient.class);
+    }
+
+    /** Every bank's database, by bank code. */
+    Map<String, JdbcClient> bankDbs() {
+        return Map.of("BANKA", bankADb(), "BANKB", bankBDb(), "BANKC", bankCDb());
+    }
+
     /** Runs each bank's own ledger audit (books balance, nobody negative, journal = balances). */
-    void auditBothBanks() {
-        bankA.getBean(LedgerAuditService.class).check();
-        bankB.getBean(LedgerAuditService.class).check();
+    void auditAllBanks() {
+        for (ConfigurableApplicationContext bank : List.of(bankA, bankB, bankC)) {
+            bank.getBean(LedgerAuditService.class).check();
+        }
     }
 
     @Override
     public void close() {
         for (ConfigurableApplicationContext app : new ConfigurableApplicationContext[] {
-                rawPsp, rawSwitch, psp, switchApp, bankB, bankA}) {
+                rawPsp, rawSwitch, psp, switchApp, bankC, bankB, bankA}) {
             if (app != null && app.isActive()) {
                 app.close();
             }

@@ -1,7 +1,8 @@
 # PaySwitch
 
-A UPI-style payment switch **simulator**: a payer's app, a switch and two banks that move money
-between each other safely, even when the network loses messages or a bank stops answering.
+A UPI-style payment switch **simulator**: a payer's app, a switch and three banks that move money
+between each other safely, even when the network loses messages or a bank stops answering, and
+then settle up with each other through a central bank.
 Java 21, Spring Boot 3, PostgreSQL, Docker Compose.
 
 > **Disclaimer:** PaySwitch is a learning project and a simulator. It is not affiliated with NPCI,
@@ -15,21 +16,24 @@ flowchart LR
     PSP -->|ReqPay<br/>paise| SW[Switch<br/>:8083]
     SW -->|debit / reverse<br/>status-check| A[Bank A<br/>:8081]
     SW -->|credit<br/>status-check| B[Bank B<br/>:8082]
-    SW --- DBS[(switch db)]
+    SW --> C[Bank C<br/>:8084]
+    SW --- DBS[(switch db<br/>+ central bank ledger)]
     A --- DBA[(banka db)]
     B --- DBB[(bankb db)]
+    C --- DBC[(bankc db)]
     subgraph Postgres
         DBS
         DBA
         DBB
+        DBC
     end
 ```
 
 | Service | Job |
 |---|---|
 | **PSP** | The payer's app backend. Validates the request, turns rupees into paise (the only place that happens), makes a txnId. |
-| **Switch** | Finds each bank from the VPA handle (`@banka`, `@bankb`), runs the payment as a state machine, and resolves every unclear bank answer. |
-| **Bank A / Bank B** | The same app run twice. A double-entry ledger with idempotent debit, credit and reverse. |
+| **Switch** | Finds each bank from the VPA handle (`@banka`, `@bankb`, `@bankc`), runs the payment as a state machine, resolves every unclear bank answer, reconciles with the banks and settles cycles. |
+| **Bank A / B / C** | The same app run three times. A double-entry ledger with idempotent debit, credit and reverse. |
 | `ledger-core` | The double-entry rules in plain Java, with no Spring or database. |
 
 ## A payment's life (the switch's state machine)
@@ -106,11 +110,14 @@ curl http://localhost:8081/accounts/ravi@banka/balance # 480000
 curl http://localhost:8082/accounts/anu@bankb/balance  # 120000
 ```
 
-Stop with `docker compose down`; `docker compose down -v` also resets every balance.
+Bank C (port 8084) has Kumar (`kumar@bankc`, Rs 4,000) and Priya (`priya@bankc`, Rs 2,500).
+
+Stop with `docker compose down`; `docker compose down -v` also resets every balance (and is needed
+once after upgrading, so Postgres creates the new `bankc` database).
 
 ## Chaos mode: make the banks unreliable
 
-Both banks run with the `chaos` profile, so `/admin/chaos` exists. Every rate starts at 0.
+All banks run with the `chaos` profile, so `/admin/chaos` exists. Every rate starts at 0.
 
 | Setting | What the bank does to /debit, /credit, /reverse |
 |---|---|
@@ -131,6 +138,35 @@ curl -X POST http://localhost:8080/pay -H "Content-Type: application/json" \
 curl -X POST http://localhost:8081/admin/chaos -H "Content-Type: application/json" -d '{}'   # chaos off
 ```
 
+## Settlement: who pays whom at the end of the day
+
+During the day no real money moves between banks. Each bank only records "I owe the switch"
+or "the switch owes me" in its `SWITCH_SETTLEMENT` account. Periodically the switch closes a
+**settlement cycle** and banks pay only their **net** position (receives minus pays):
+
+| Payments in the cycle | Bank A | Bank B | Bank C |
+|---|---|---|---|
+| A -> B Rs 10,000 | -10,000 | +10,000 | |
+| B -> C Rs 6,000 | | -6,000 | +6,000 |
+| C -> A Rs 4,000 | +4,000 | | -4,000 |
+| **Net position** | **-6,000** | **+4,000** | **+2,000** |
+
+Gross Rs 20,000, but only Rs 6,000 actually moves (70% saved). The positions always sum to zero;
+the switch checks that, and a cycle that does not add up is marked FAILED and never settled.
+
+Only payments that are SUCCESS **and** confirmed by reconciliation join a cycle. DEEMED_APPROVED
+payments and reconciliation exceptions wait for a later cycle.
+
+```bash
+curl -X POST http://localhost:8083/admin/settlement/close        # close + settle the open cycle
+curl http://localhost:8083/admin/settlement/cycles/1             # items, net positions, gross vs net
+curl http://localhost:8083/admin/settlement/central/reserves     # each bank at the central bank
+```
+
+Settling posts one journal entry in the central bank's ledger (same `ledger-core` rules), then
+sends each bank `POST /settlement/advice`, which moves the amount from `SWITCH_SETTLEMENT` to
+its `CENTRAL_BANK_RESERVE`. Every step is idempotent by cycle id.
+
 ## Design decisions
 
 | Decision | Why |
@@ -149,6 +185,7 @@ curl -X POST http://localhost:8081/admin/chaos -H "Content-Type: application/jso
 | Unknown debit, so reverse; unknown credit, so never reverse (DEEMED_APPROVED) | Reversing a debit is safe either way; reversing a credit that did happen would create money. |
 | Retries with exponential backoff and jitter | Gives a struggling bank room to recover, and spreads retries so they do not all land at once. |
 | Background resolver with `FOR UPDATE SKIP LOCKED` and a lease | Many copies of the switch can run it at once without ever handling the same payment twice. |
+| Multilateral net settlement of reconciled payments only | Far less money moves between banks, and nothing is settled that the banks' own books do not confirm. |
 
 ## Tests
 

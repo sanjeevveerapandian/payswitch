@@ -44,12 +44,12 @@ class PaymentEndToEndTest {
     void moneyIsConserved() {
         Money after = Money.snapshot(system);
         assertEquals(before.customersA() + before.customersB(), after.customersA() + after.customersB(),
-                "total customer money across both banks changed");
+                "total customer money across all banks changed");
         // What Bank A owes the switch + what Bank B owes the switch is always zero in total:
         // every rupee one bank is waiting to send, the other bank has already paid out.
         assertEquals(before.settlementA() + before.settlementB(), after.settlementA() + after.settlementB(),
                 "money is stuck in a settlement account");
-        system.auditBothBanks();
+        system.auditAllBanks();
     }
 
     @Test

@@ -19,6 +19,11 @@
             <groupId>com.payswitch</groupId>
             <artifactId>common</artifactId>
         </dependency>
+        <!-- Phase 9: the central bank's ledger uses the same double-entry rules as the banks -->
+        <dependency>
+            <groupId>com.payswitch</groupId>
+            <artifactId>ledger-core</artifactId>
+        </dependency>
 
         <!-- HTTP + JSON: our own API, and RestClient for calling the banks -->
         <dependency>

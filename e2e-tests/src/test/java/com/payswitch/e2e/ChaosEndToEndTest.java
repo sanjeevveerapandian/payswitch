@@ -61,7 +61,7 @@ class ChaosEndToEndTest {
     void moneyIsConserved() {
         system.chaosOff();
         assertEquals(before.total(), Money.snapshot(system).total(), "money was created or destroyed");
-        system.auditBothBanks();
+        system.auditAllBanks();
     }
 
     // ---- chaos at the PAYER's bank (the debit) -----------------------------------------

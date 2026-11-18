@@ -1,4 +1,4 @@
-# One app, two banks: start it with BANK_CODE=BANKA or BANK_CODE=BANKB.
+# One app, three banks: start it with BANK_CODE=BANKA, BANKB or BANKC.
 bank:
   code: ${BANK_CODE:BANKA}
   chaos:

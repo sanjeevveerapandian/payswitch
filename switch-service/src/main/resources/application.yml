@@ -45,6 +45,10 @@ switch:
     bank-clock-slack: 5m  # read bank entries this much beyond the window on both sides
     page-size: 500        # /recon/entries page size
     run-lease: 30m        # a crashed run's window can be taken over after this
+  # Settlement: every interval, close the open cycle and settle it (net positions, central bank, advice).
+  settlement:
+    enabled: true
+    interval: 1h
   # VPA routing: the handle after the @ decides the bank.
   #   ravi@banka -> handle "banka" -> Bank A
   banks:
@@ -54,6 +58,9 @@ switch:
     bankb:
       code: BANKB
       url: ${BANKB_URL:http://localhost:8082}
+    bankc:
+      code: BANKC
+      url: ${BANKC_URL:http://localhost:8084}
 
 management:
   endpoints:

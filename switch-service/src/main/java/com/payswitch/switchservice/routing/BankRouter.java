@@ -20,6 +20,11 @@ public class BankRouter {
         return Optional.ofNullable(properties.banks().get(vpa.handle()));
     }
 
+    /** The bank with this code (e.g. BANKC), if the switch knows it. */
+    public Optional<BankRoute> byCode(String code) {
+        return allBanks().stream().filter(b -> b.code().equals(code)).findFirst();
+    }
+
     /** Every bank the switch talks to, once each. */
     public Collection<BankRoute> allBanks() {
         return List.copyOf(properties.banks().values().stream().distinct().toList());

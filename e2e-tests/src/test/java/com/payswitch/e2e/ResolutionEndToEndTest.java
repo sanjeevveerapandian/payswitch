@@ -32,7 +32,7 @@ import org.springframework.web.client.RestClient;
 /**
  * Phase 6: every UNKNOWN gets resolved. Real banks with chaos, the switch with resolution on.
  * Every test ends by checking where Ravi's Rs 200 is, and (after each test) that the total money
- * across both banks is unchanged.
+ * across all banks is unchanged.
  *
  * <p>Ravi (Bank A) pays Rs 200 to Anu's shop (Bank B).
  */
@@ -58,7 +58,7 @@ class ResolutionEndToEndTest {
     void moneyIsConserved() {
         system.chaosOff();
         assertEquals(before.total(), Money.snapshot(system).total(), "money was created or destroyed");
-        system.auditBothBanks();
+        system.auditAllBanks();
     }
 
     // ---- debit UNKNOWN ------------------------------------------------------------------

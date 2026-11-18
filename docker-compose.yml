@@ -2,12 +2,13 @@
 #
 #   you -> psp :8080 -> switch :8083 -> bank-a :8081
 #                                    -> bank-b :8082
-#                       all three use -> postgres (databases: switch, banka, bankb)
+#                                    -> bank-c :8084
+#                       all of them use -> postgres (databases: switch, banka, bankb, bankc)
 #
 # Inside this Compose network, services reach each other BY SERVICE NAME:
 # the switch calls http://bank-a:8081, not localhost.
 
-# Both banks are built from the same Dockerfile; only their environment differs.
+# All three banks are built from the same Dockerfile; only their environment differs.
 x-bank-build: &bank-build
   context: .
   dockerfile: bank-service/Dockerfile
@@ -26,7 +27,8 @@ services:
       POSTGRES_USER: payswitch
       POSTGRES_PASSWORD: payswitch
     volumes:
-      # Creates the databases banka, bankb and switch on first start.
+      # Creates the databases banka, bankb, bankc and switch on first start.
+      # (Only on an EMPTY data folder: after adding a database, run "docker compose down -v" once.)
       - ./docker/postgres/init-databases.sql:/docker-entrypoint-initdb.d/init-databases.sql:ro
     ports:
       - "5433:5432"          # for running a service from your IDE against this database
@@ -72,6 +74,23 @@ services:
       test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:8082/actuator/health || exit 1"]
       <<: *health-timing
 
+  bank-c:
+    build: *bank-build
+    image: payswitch/bank-service
+    environment:
+      BANK_CODE: BANKC
+      SPRING_PROFILES_ACTIVE: chaos
+      PORT: 8084
+      DB_URL: jdbc:postgresql://postgres:5432/bankc
+    ports:
+      - "8084:8084"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:8084/actuator/health || exit 1"]
+      <<: *health-timing
+
   switch:
     build:
       context: .
@@ -82,6 +101,7 @@ services:
       DB_URL: jdbc:postgresql://postgres:5432/switch
       BANKA_URL: http://bank-a:8081
       BANKB_URL: http://bank-b:8082
+      BANKC_URL: http://bank-c:8084
     ports:
       - "8083:8083"
     depends_on:
@@ -90,6 +110,8 @@ services:
       bank-a:
         condition: service_healthy
       bank-b:
+        condition: service_healthy
+      bank-c:
         condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:8083/actuator/health || exit 1"]

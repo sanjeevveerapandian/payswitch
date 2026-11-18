@@ -24,7 +24,7 @@ import org.springframework.web.client.RestClient;
 
 /**
  * Reconciliation against real banks. Every test reconciles a window holding only its own
- * payments, and after every test the total money across both banks is unchanged.
+ * payments, and after every test the total money across all banks is unchanged.
  */
 class ReconEndToEndTest {
 
@@ -50,7 +50,7 @@ class ReconEndToEndTest {
     void moneyIsConserved() {
         system.chaosOff();
         assertEquals(before.total(), Money.snapshot(system).total(), "money was created or destroyed");
-        system.auditBothBanks();
+        system.auditAllBanks();
     }
 
     // ---------------------------------------------------------------------------------------
