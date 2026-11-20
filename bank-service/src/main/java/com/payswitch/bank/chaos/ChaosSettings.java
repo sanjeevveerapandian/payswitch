@@ -22,11 +22,20 @@ package com.payswitch.bank.chaos;
  *                         null = a different sequence every time
  * @param statusErrorRate  POST /status-check only: answer HTTP 500 without looking anything up.
  *                         Rolled on separate dice, so it never shifts the sequence above.
+ * @param delayJitterMs    an EXTRA random delay of 0..delayJitterMs on top of delayMs, different on
+ *                         every call (e.g. delayMs 0 + jitter 300 = "random 0-300 ms"). Not taken
+ *                         from the seeded dice, so it never shifts the sequence of decisions either.
  */
 public record ChaosSettings(double declineRate, double errorRate, long delayMs, double dropResponseRate,
-                            Long seed, double statusErrorRate) {
+                            Long seed, double statusErrorRate, long delayJitterMs) {
 
-    public static final ChaosSettings NONE = new ChaosSettings(0, 0, 0, 0, null, 0);
+    public static final ChaosSettings NONE = new ChaosSettings(0, 0, 0, 0, null, 0, 0);
+
+    /** Settings without a random delay (the Phase 6 shape). */
+    public ChaosSettings(double declineRate, double errorRate, long delayMs, double dropResponseRate,
+                         Long seed, double statusErrorRate) {
+        this(declineRate, errorRate, delayMs, dropResponseRate, seed, statusErrorRate, 0);
+    }
 
     /** Settings without status-check chaos (the Phase 5 shape). */
     public ChaosSettings(double declineRate, double errorRate, long delayMs, double dropResponseRate, Long seed) {
@@ -43,6 +52,9 @@ public record ChaosSettings(double declineRate, double errorRate, long delayMs, 
         }
         if (delayMs < 0 || delayMs > 60_000) {
             throw new IllegalArgumentException("delayMs must be between 0 and 60000, got " + delayMs);
+        }
+        if (delayJitterMs < 0 || delayJitterMs > 60_000) {
+            throw new IllegalArgumentException("delayJitterMs must be between 0 and 60000, got " + delayJitterMs);
         }
     }
 

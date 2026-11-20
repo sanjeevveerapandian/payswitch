@@ -1,0 +1,65 @@
+[2026-11-20T08:44:17.408498900Z] Total customer money before the run: Rs 171040000.00
+[2026-11-20T08:44:17.665148400Z] Chaos ON {statusErrorRate=0.05, dropResponseRate=0.02, delayMs=0, declineRate=0.05, errorRate=0.03, delayJitterMs=300} on [http://localhost:8081, http://localhost:8082, http://localhost:8084]
+[2026-11-20T08:44:17.940499600Z] Sending 100000 payments, 50 at a time, seed 42, chaos ON
+[2026-11-20T09:08:21.791270Z] 5000 / 100000 done (5%), 3 payments/s
+[2026-11-20T09:09:27.290114700Z] 10000 / 100000 done (10%), 7 payments/s
+[2026-11-20T09:10:22.379949700Z] 15000 / 100000 done (15%), 10 payments/s
+[2026-11-20T09:11:17.819298500Z] 20000 / 100000 done (20%), 12 payments/s
+[2026-11-20T09:12:23.807508700Z] 25000 / 100000 done (25%), 15 payments/s
+[2026-11-20T09:13:21.264515200Z] 30000 / 100000 done (30%), 17 payments/s
+[2026-11-20T09:14:21.300031700Z] 35000 / 100000 done (35%), 19 payments/s
+[2026-11-20T09:15:13.641900200Z] 40000 / 100000 done (40%), 22 payments/s
+[2026-11-20T09:16:08.343282300Z] 45000 / 100000 done (45%), 24 payments/s
+[2026-11-20T09:17:00.780811900Z] 50000 / 100000 done (50%), 25 payments/s
+[2026-11-20T09:17:54.739334300Z] 55000 / 100000 done (55%), 27 payments/s
+[2026-11-20T09:18:52.455342200Z] 60000 / 100000 done (60%), 29 payments/s
+[2026-11-20T09:19:51.277201400Z] 65000 / 100000 done (65%), 30 payments/s
+[2026-11-20T09:20:47.806249100Z] 70000 / 100000 done (70%), 32 payments/s
+[2026-11-20T09:21:45.546040200Z] 75000 / 100000 done (75%), 33 payments/s
+[2026-11-20T09:22:41.581893600Z] 80000 / 100000 done (80%), 35 payments/s
+[2026-11-20T09:24:18.965278600Z] 85000 / 100000 done (85%), 35 payments/s
+[2026-11-20T09:26:02.706439300Z] 90000 / 100000 done (90%), 36 payments/s
+[2026-11-20T09:26:57.004537400Z] 95000 / 100000 done (95%), 37 payments/s
+[2026-11-20T09:27:53.424563800Z] 100000 / 100000 done (100%), 38 payments/s
+[2026-11-20T09:27:53.510902500Z] Chaos OFF on [http://localhost:8081, http://localhost:8082, http://localhost:8084]
+[2026-11-20T09:27:53.510902500Z] Load done. Auditing (chaos is off now)...
+[2026-11-20T09:27:53.610878900Z] stuck payments (resolver still working): 0
+[2026-11-20T09:27:53.636271800Z] recon 2026-11-20T08:44:18.114176Z .. 2026-11-20T09:27:48.493083Z
+[2026-11-20T09:32:24.055095400Z] recon PARTIAL {"AMOUNT_MISMATCH":0,"BANK_ONLY":0,"DEEMED_UNRESOLVED":0,"MATCHED":99527,"RESOLVED_DEEMED":0,"SKIPPED_TOO_NEW":458,"SWITCH_ONLY":0,"UNFINISHED":0}, running it again shortly...
+[2026-11-20T09:41:50.014495600Z] recon COMPLETED: {"AMOUNT_MISMATCH":0,"BANK_ONLY":0,"DEEMED_UNRESOLVED":0,"MATCHED":99985,"RESOLVED_DEEMED":0,"SKIPPED_TOO_NEW":0,"SWITCH_ONLY":0,"UNFINISHED":0}
+[2026-11-20T09:41:50.017284300Z] unfinished payments after recon: 0
+[2026-11-20T09:41:58.613326800Z] settlement cycle 1 SETTLED: 83577 payments, gross 10997228212 paise, net moved 149649463 paise (98.64% saved), net positions {BANKA=-149649463, BANKB=101544528, BANKC=48104935}
+
+=== Run B ===
+Payments: 100000, concurrency 50, seed 42, chaos ON, switch crash none
+Load: 2615.5 s, 38 payments/s (TPS, as sent by 50 concurrent clients)
+HTTP status from the PSP (-1 = no answer at all): {-1=214, 200=99766, 502=20}
+Customer was told: {ERROR=234, FAILED=9167, PENDING=247, REVERSED=7047, SUCCESS=83305}
+Latency, all requests:   p50 364 ms, p95 1233 ms, p99 5472 ms, max 703070 ms (n=100000)
+Latency, answered (200): p50 364 ms, p95 1100 ms, p99 5377 ms, max 699513 ms (n=99766)
+Told PENDING or no answer, finished later: 97 SUCCESS, 150 REVERSED, 20 FAILED; 214 never reached the switch (no money moved)
+PASS  8) no customer was told something that later changed: 0 broken
+
+MONEY AUDIT: PASS
+  PASS  1) total customer money unchanged: Rs 171040000.00 now, Rs 171040000.00 at the start
+  PASS  2) no payment left unfinished: 0 in DEBIT_SENT / CREDIT_SENT / REVERSAL_SENT / DEEMED_APPROVED (or any other non-final state)
+  PASS  3) no txnId debited or credited twice: 90793 txnIds with bank entries, 0 with a double movement
+  PASS  4) every outcome matches the money moved: 83577 SUCCESS with exactly one debit + one credit, 16408 FAILED/REVERSED with zero net effect; 0 wrong
+  PASS  5) every customer's balance explained by the switch: 906 customers checked, 0 wrong
+  PASS  6) settlement squared up: every SWITCH_SETTLEMENT 0, central ledger balanced, 1 cycle(s) with net positions summing to 0; 0 problem(s)
+  PASS  7) recon exceptions == 0: 99985 txnIds reconciled, 0 exceptions
+Final states: {FAILED=9192, REVERSED=7216, SUCCESS=83577}
+Recon (latest line per txnId): {MATCHED=99985}
+Settlement: cycle 1 SETTLED: 83577 payments, gross 10997228212 paise, net moved 149649463 paise (98.64% saved), net positions {BANKA=-149649463, BANKB=101544528, BANKC=48104935}
+Help needed:
+  9624  bank answer UNKNOWN at least once (timeout / HTTP 500), resolved by status checks
+  3689  outcome confirmed by a status check (debit or credit found at the bank)
+  0  found in INITIATED after a crash, closed as FAILED (never sent to a bank)
+  1  reached DEEMED_APPROVED
+  0  finished by recon (RESOLVED_DEEMED)
+  7216  reversed (payer refunded)
+  1254  declined for insufficient funds
+Audit time: prepare 845 s, checks 6 s
+Total runtime (load + audit): 3466.6 s
+RESULT: PASS
+

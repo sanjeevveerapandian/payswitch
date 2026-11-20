@@ -142,13 +142,19 @@ public class TransactionService {
 
     /** For reconciliation: payments created in [from, to) that are at least {@code cutoff} old. */
     @Transactional(readOnly = true)
-    public List<Txn> createdBetween(Instant from, Instant to, Duration cutoff) {
-        return txns.createdBetween(from, to, cutoff);
+    public List<Txn> createdBetween(Instant from, Instant to, Instant youngest) {
+        return txns.createdBetween(from, to, youngest);
     }
 
     @Transactional(readOnly = true)
-    public int countTooRecent(Instant from, Instant to, Duration cutoff) {
-        return txns.countTooRecent(from, to, cutoff);
+    public int countTooRecent(Instant from, Instant to, Instant youngest) {
+        return txns.countTooRecent(from, to, youngest);
+    }
+
+    /** The database's clock (the one that stamps created_at). */
+    @Transactional(readOnly = true)
+    public Instant dbNow() {
+        return txns.dbNow();
     }
 
     /** Which of these txnIds exist in the switch at all. */

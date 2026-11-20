@@ -6,5 +6,6 @@
 !bank-service
 !switch-service
 !psp-service
+!load-generator
 !e2e-tests
 **/target

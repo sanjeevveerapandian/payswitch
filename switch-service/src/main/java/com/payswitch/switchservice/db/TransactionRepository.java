@@ -134,35 +134,44 @@ public class TransactionRepository {
     }
 
     /**
-     * Payments created in [from, to) that are at least {@code cutoff} old (by the database clock,
-     * the same clock that stamped created_at). Oldest first.
+     * Payments created in [from, to) and before {@code youngest} (a database-clock instant, the
+     * same clock that stamped created_at), i.e. old enough to reconcile. Oldest first.
      */
-    public List<Txn> createdBetween(Instant from, Instant to, Duration cutoff) {
+    public List<Txn> createdBetween(Instant from, Instant to, Instant youngest) {
         return jdbc.sql("""
                 SELECT * FROM transactions
                 WHERE created_at >= :from AND created_at < :to
-                  AND created_at < now() - make_interval(secs => :cutoff)
+                  AND created_at < :youngest
                 ORDER BY created_at, txn_id
                 """)
                 .param("from", OffsetDateTime.ofInstant(from, ZoneOffset.UTC))
                 .param("to", OffsetDateTime.ofInstant(to, ZoneOffset.UTC))
-                .param("cutoff", cutoff.toMillis() / 1000.0)
+                .param("youngest", OffsetDateTime.ofInstant(youngest, ZoneOffset.UTC))
                 .query(TransactionRepository::map)
                 .list();
     }
 
-    /** How many payments in [from, to) are still younger than {@code cutoff}. */
-    public int countTooRecent(Instant from, Instant to, Duration cutoff) {
+    /**
+     * How many payments in [from, to) were created at or after {@code youngest}. Must be given the
+     * SAME {@code youngest} as {@link #createdBetween}: together the two answers cover every payment
+     * in the window exactly once.
+     */
+    public int countTooRecent(Instant from, Instant to, Instant youngest) {
         return jdbc.sql("""
                 SELECT COUNT(*) FROM transactions
                 WHERE created_at >= :from AND created_at < :to
-                  AND created_at >= now() - make_interval(secs => :cutoff)
+                  AND created_at >= :youngest
                 """)
                 .param("from", OffsetDateTime.ofInstant(from, ZoneOffset.UTC))
                 .param("to", OffsetDateTime.ofInstant(to, ZoneOffset.UTC))
-                .param("cutoff", cutoff.toMillis() / 1000.0)
+                .param("youngest", OffsetDateTime.ofInstant(youngest, ZoneOffset.UTC))
                 .query(Integer.class)
                 .single();
+    }
+
+    /** The database's clock, the same clock that stamps created_at. */
+    public Instant dbNow() {
+        return jdbc.sql("SELECT clock_timestamp()").query(OffsetDateTime.class).single().toInstant();
     }
 
     /** Which of these txnIds the switch knows at all (whatever their state or age). */

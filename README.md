@@ -124,6 +124,7 @@ All banks run with the `chaos` profile, so `/admin/chaos` exists. Every rate sta
 | `declineRate` | answers DECLINED without doing anything |
 | `errorRate` | answers HTTP 500 without doing anything |
 | `delayMs` | waits this long first |
+| `delayJitterMs` | waits a random extra 0..this many ms (so `delayMs` 0 + jitter 300 = random 0-300 ms) |
 | `dropResponseRate` | **does** the operation, commits it, then stays silent past the switch's timeout |
 | `statusErrorRate` | answers HTTP 500 to `/status-check` |
 | `seed` | repeat the same random decisions every time |
@@ -167,6 +168,38 @@ Settling posts one journal entry in the central bank's ledger (same `ledger-core
 sends each bank `POST /settlement/advice`, which moves the amount from `SWITCH_SETTLEMENT` to
 its `CENTRAL_BANK_RESERVE`. Every step is idempotent by cycle id.
 
+## The 1 lakh payment chaos test
+
+A load generator sends lakhs of payments through the PSP; a money auditor then reads all four
+databases directly and checks, to the paisa, that nothing was lost. Results: [RESULTS.md](RESULTS.md).
+
+```bash
+mvn -pl load-generator -am install -DskipTests          # builds load-generator/target/*-all.jar
+docker compose down -v
+docker compose -f docker-compose.yml -f docker-compose.loadtest.yml up --build -d
+java -jar load-generator/target/load-generator-0.1.0-SNAPSHOT-all.jar --count 100000 --concurrency 50      --seed 42 --chaos on --crash-switch-at 50
+```
+
+| Option | Default | |
+|---|---|---|
+| `--count` | 100000 | payments to send |
+| `--concurrency` | 50 | payments in flight at once |
+| `--seed` | 42 | same seed, same payments |
+| `--chaos` | off | on: 5% declines, 3% HTTP 500, 2% dropped answers, 5% failed status checks, 0-300 ms delay, on every bank |
+| `--crash-switch-at` | none | at this % of payments sent: `docker compose kill switch`, 5 s, `docker compose start switch` |
+| `--psp-url` | http://localhost:8080 | |
+| `--audit` | on | off: only send, do not audit |
+| `--report` | | also write the report to this file |
+
+`docker-compose.loadtest.yml` adds 300 customers per bank (`cust001@banka` .. `cust300@bankc`) and
+makes the switch's timers faster so the audit does not wait minutes. The auditor alone, any time:
+
+```bash
+java -cp load-generator/target/load-generator-0.1.0-SNAPSHOT-all.jar com.payswitch.load.audit.MoneyAuditor
+```
+
+A 5,000 payment version runs automatically in `mvn verify` (`LoadChaosIT`), not in `mvn test`.
+
 ## Design decisions
 
 | Decision | Why |
@@ -185,6 +218,7 @@ its `CENTRAL_BANK_RESERVE`. Every step is idempotent by cycle id.
 | Unknown debit, so reverse; unknown credit, so never reverse (DEEMED_APPROVED) | Reversing a debit is safe either way; reversing a credit that did happen would create money. |
 | Retries with exponential backoff and jitter | Gives a struggling bank room to recover, and spreads retries so they do not all land at once. |
 | Background resolver with `FOR UPDATE SKIP LOCKED` and a lease | Many copies of the switch can run it at once without ever handling the same payment twice. |
+| The money auditor reads the databases with SQL, not the services' APIs | An auditor must not trust the code it audits. |
 | Multilateral net settlement of reconciled payments only | Far less money moves between banks, and nothing is settled that the banks' own books do not confirm. |
 
 ## Tests
@@ -193,5 +227,6 @@ its `CENTRAL_BANK_RESERVE`. Every step is idempotent by cycle id.
 mvn test
 ```
 
-Needs Docker: the tests start a real PostgreSQL with Testcontainers. Coverage reports are written
+Needs Docker: the tests start a real PostgreSQL with Testcontainers. `mvn verify` also runs the
+5,000 payment chaos test (about 2 minutes). Coverage reports are written
 to each module's `target/site/jacoco/index.html`.

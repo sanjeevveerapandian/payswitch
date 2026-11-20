@@ -114,6 +114,32 @@ class ChaosEngineTest {
         assertThrows(IllegalArgumentException.class, () -> new ChaosSettings(0.5, 0.4, 0, 0.2, null));
         assertThrows(IllegalArgumentException.class, () -> new ChaosSettings(0, 0, -1, 0, null));
         assertThrows(IllegalArgumentException.class, () -> new ChaosSettings(0, 0, 60_001, 0, null));
+        assertThrows(IllegalArgumentException.class, () -> new ChaosSettings(0, 0, 0, 0, null, 0, -1));
+        assertThrows(IllegalArgumentException.class, () -> new ChaosSettings(0, 0, 0, 0, null, 0, 60_001));
+    }
+
+    /** Phase 10: "delay random 0-300 ms" = delayMs 0 + delayJitterMs 300. */
+    @Test
+    void randomDelayStaysInRangeAndActuallyVaries() {
+        ChaosSettings jittery = new ChaosSettings(0, 0, 100, 0, null, 0, 300);
+        java.util.Set<Long> seen = new java.util.HashSet<>();
+        for (int i = 0; i < 2_000; i++) {
+            long d = ChaosEngine.delayFor(jittery);
+            assertEquals(true, d >= 100 && d <= 400, "delay " + d);
+            seen.add(d);
+        }
+        assertEquals(true, seen.size() > 100, "only " + seen.size() + " different delays");
+        assertEquals(100, ChaosEngine.delayFor(new ChaosSettings(0, 0, 100, 0, null)));
+    }
+
+    /** The random delay must not use the seeded dice: the same seed still gives the same decisions. */
+    @Test
+    void randomDelayDoesNotChangeSeededDecisions() {
+        ChaosEngine plain = new ChaosEngine(Duration.ZERO);
+        ChaosEngine jittery = new ChaosEngine(Duration.ZERO);
+        plain.configure(new ChaosSettings(0.3, 0.3, 0, 0.2, 42L, 0, 0));
+        jittery.configure(new ChaosSettings(0.3, 0.3, 0, 0.2, 42L, 0, 2));
+        assertEquals(runCalls(plain, 50), runCalls(jittery, 50));
     }
 
     /** What chaos did to each of n calls, as text: PROCEED / DECLINE / ERROR / DROP_RESPONSE. */

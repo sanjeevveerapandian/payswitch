@@ -65,6 +65,8 @@ final class PaymentSystem implements AutoCloseable {
     private ConfigurableApplicationContext rawPsp;
     private List<String> switchArgs;
     private int switchPort;
+    /** Phase 10: 300 extra customers per bank, and a background resolver that really runs. */
+    private final boolean loadTest;
 
     static synchronized PaymentSystem shared() {
         if (instance == null) {
@@ -81,7 +83,28 @@ final class PaymentSystem implements AutoCloseable {
         return instance;
     }
 
+    /**
+     * A SEPARATE system for the load test (LoadChaosIT): the "loadtest" seed (300 customers per bank),
+     * a background resolver that runs every second, and recon pages of 500. Not shared: the caller
+     * closes it.
+     */
+    static PaymentSystem startForLoadTest() {
+        PaymentSystem system = new PaymentSystem(true);
+        try {
+            system.start();
+        } catch (SQLException e) {
+            system.close();
+            throw new IllegalStateException("Could not start the payment system", e);
+        }
+        return system;
+    }
+
     private PaymentSystem() {
+        this(false);
+    }
+
+    private PaymentSystem(boolean loadTest) {
+        this.loadTest = loadTest;
     }
 
     private void start() throws SQLException {
@@ -133,7 +156,8 @@ final class PaymentSystem implements AutoCloseable {
                 "--spring.profiles.active=chaos",               // /admin/chaos exists, all rates 0
                 "--bank.chaos.drop-response-sleep=" + DROP_RESPONSE_SLEEP,
                 "--bank.code=" + code,
-                "--spring.flyway.locations=classpath:db/bank/migration,classpath:db/bank/seed/" + code), 0);
+                "--spring.flyway.locations=classpath:db/bank/migration,classpath:db/bank/seed/" + code
+                        + (loadTest ? ",classpath:db/bank/loadtest/" + code : "")), 0);
     }
 
     private List<String> switchArgs(String database, boolean resolution) {
@@ -155,8 +179,11 @@ final class PaymentSystem implements AutoCloseable {
                 "--switch.retry.max-attempts=3",
                 "--switch.resolution.enabled=" + resolution,
                 "--switch.resolution.inline-wait=3s",
-                "--switch.resolution.stuck-after=0s",
-                "--switch.resolution.interval=1h",              // tests never wait for the timer
+                // Normal tests never wait for the timer. The load test needs the real safety net:
+                // payments quiet for 2 s are picked up by a resolver running every second.
+                "--switch.resolution.stuck-after=" + (loadTest ? "2s" : "0s"),
+                "--switch.resolution.interval=" + (loadTest ? "1s" : "1h"),
+                "--switch.resolution.deemed-recheck-after=" + (loadTest ? "5s" : "5m"),
                 "--switch.resolution.batch-size=10",
                 "--switch.resolution.lease=10s",
                 "--switch.resolution.run-on-startup=true",
@@ -165,7 +192,7 @@ final class PaymentSystem implements AutoCloseable {
                 "--switch.recon.enabled=false",
                 "--switch.recon.cutoff=" + RECON_CUTOFF.toMillis() + "ms",
                 "--switch.recon.bank-clock-slack=1m",
-                "--switch.recon.page-size=3",
+                "--switch.recon.page-size=" + (loadTest ? 500 : 3),
                 // Settlement: tests close cycles themselves.
                 "--switch.settlement.enabled=false");
     }
@@ -207,6 +234,20 @@ final class PaymentSystem implements AutoCloseable {
 
     private static String url(ConfigurableApplicationContext app) {
         return "http://localhost:" + port(app);
+    }
+
+    /** e.g. jdbc:postgresql://localhost:54321/ : append a database name. */
+    String jdbcBase() {
+        return "jdbc:postgresql://" + postgres.getHost() + ":"
+                + postgres.getMappedPort(PostgreSQLContainer.POSTGRESQL_PORT) + "/";
+    }
+
+    String dbUser() {
+        return postgres.getUsername();
+    }
+
+    String dbPassword() {
+        return postgres.getPassword();
     }
 
     String pspUrl() {

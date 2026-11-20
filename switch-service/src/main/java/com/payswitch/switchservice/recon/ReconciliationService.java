@@ -80,6 +80,10 @@ public class ReconciliationService {
         if (from == null || to == null || !from.isBefore(to)) {
             throw new IllegalArgumentException("from must be before to");
         }
+        // ONE horizon for the whole run: "old enough" means created before this instant. Asking the
+        // clock twice (once when listing payments, again when counting the too-new ones) lost every
+        // payment that aged past the cutoff while the run was working (Phase 10 chaos test).
+        Instant youngest = txns.dbNow().minus(props.cutoff());
         long runId = repo.findOrCreateRun(from, to);
         if (!repo.claim(runId, props.runLease())) {
             log.info("Recon run {} for {}..{} is already running elsewhere; reporting as it stands.", runId, from, to);
@@ -96,7 +100,7 @@ public class ReconciliationService {
 
         // 3. Every switch payment in the window that is old enough and has no line yet.
         Set<String> done = repo.itemTxnIds(runId);
-        for (Txn txn : txns.createdBetween(from, to, props.cutoff())) {
+        for (Txn txn : txns.createdBetween(from, to, youngest)) {
             if (!done.contains(txn.txnId())) {
                 reconcile(runId, txn, banks);
             }
@@ -105,7 +109,7 @@ public class ReconciliationService {
         // 4. Money a bank moved for a txnId the switch has never heard of.
         findBankOnly(runId, from, to, banks);
 
-        int tooNew = txns.countTooRecent(from, to, props.cutoff());
+        int tooNew = txns.countTooRecent(from, to, youngest);
         Map<String, Integer> counts = new TreeMap<>(repo.counts(runId));
         counts.put("SKIPPED_TOO_NEW", tooNew);
         repo.finish(runId, tooNew > 0 ? "PARTIAL" : "COMPLETED", counts);

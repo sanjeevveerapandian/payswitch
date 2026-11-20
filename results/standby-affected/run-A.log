@@ -1,0 +1,33 @@
+[2026-11-20T07:51:02.404108Z] Total customer money before the run: Rs 171040000.00
+[2026-11-20T07:51:02.831906700Z] Sending 100000 payments, 50 at a time, seed 42, chaos off
+[2026-11-20T07:51:47.619516400Z] 5000 / 100000 done (5%), 112 payments/s
+[2026-11-20T07:52:15.439455400Z] 10000 / 100000 done (10%), 138 payments/s
+[2026-11-20T07:52:38.759832900Z] 15000 / 100000 done (15%), 156 payments/s
+[2026-11-20T07:53:02.600920700Z] 20000 / 100000 done (20%), 167 payments/s
+[2026-11-20T07:53:25.103533200Z] 25000 / 100000 done (25%), 176 payments/s
+[2026-11-20T07:53:47.472612100Z] 30000 / 100000 done (30%), 182 payments/s
+[2026-11-20T07:54:10.192499800Z] 35000 / 100000 done (35%), 187 payments/s
+[2026-11-20T07:54:32.252892Z] 40000 / 100000 done (40%), 191 payments/s
+[2026-11-20T07:54:55.885325500Z] 45000 / 100000 done (45%), 193 payments/s
+[2026-11-20T07:55:18.764840300Z] 50000 / 100000 done (50%), 195 payments/s
+[2026-11-20T07:55:42.287523500Z] 55000 / 100000 done (55%), 197 payments/s
+[2026-11-20T07:56:06.899991100Z] 60000 / 100000 done (60%), 197 payments/s
+[2026-11-20T07:56:29.768652600Z] 65000 / 100000 done (65%), 199 payments/s
+[2026-11-20T07:56:52.218945300Z] 70000 / 100000 done (70%), 200 payments/s
+[2026-11-20T07:57:25.821512800Z] 75000 / 100000 done (75%), 196 payments/s
+[2026-11-20T07:57:50.769907200Z] 80000 / 100000 done (80%), 196 payments/s
+[2026-11-20T07:58:15.768891200Z] 85000 / 100000 done (85%), 196 payments/s
+[2026-11-20T07:58:37.983332500Z] 90000 / 100000 done (90%), 198 payments/s
+[2026-11-20T07:59:18.684354100Z] 95000 / 100000 done (95%), 192 payments/s
+[2026-11-20T07:59:39.619499800Z] 100000 / 100000 done (100%), 194 payments/s
+[2026-11-20T07:59:39.620567700Z] Load done. Auditing (chaos is off now)...
+[2026-11-20T07:59:39.683021300Z] stuck payments (resolver still working): 0
+[2026-11-20T07:59:39.700444600Z] recon 2026-11-20T07:51:03.094264Z .. 2026-11-20T07:59:39.440936Z
+Exception in thread "main" java.net.http.HttpTimeoutException: request timed out
+	at java.net.http/jdk.internal.net.http.HttpClientImpl.send(HttpClientImpl.java:953)
+	at java.net.http/jdk.internal.net.http.HttpClientFacade.send(HttpClientFacade.java:133)
+	at com.payswitch.load.Http.post(Http.java:59)
+	at com.payswitch.load.audit.MoneyAuditor.reconcile(MoneyAuditor.java:183)
+	at com.payswitch.load.audit.MoneyAuditor.prepare(MoneyAuditor.java:131)
+	at com.payswitch.load.audit.MoneyAuditor.audit(MoneyAuditor.java:84)
+	at com.payswitch.load.LoadGenerator.main(LoadGenerator.java:122)

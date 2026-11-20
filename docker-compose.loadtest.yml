@@ -1,0 +1,27 @@
+# Phase 10: settings for the big load test, layered ON TOP of docker-compose.yml:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.loadtest.yml up --build -d
+#
+# Banks: the "loadtest" profile adds 300 customers per bank (cust001..cust300@banka/bankb/bankc).
+# Switch: the timers are made faster so the auditor does not wait 5 minutes for recon's cutoff,
+#   and the scheduled recon/settlement jobs are off because the auditor runs them itself, once,
+#   over the whole run. Nothing about HOW a payment is processed changes: same timeouts, same
+#   retries, same resolution logic.
+services:
+  bank-a:
+    environment:
+      SPRING_PROFILES_ACTIVE: chaos,loadtest
+  bank-b:
+    environment:
+      SPRING_PROFILES_ACTIVE: chaos,loadtest
+  bank-c:
+    environment:
+      SPRING_PROFILES_ACTIVE: chaos,loadtest
+  switch:
+    environment:
+      SPRING_APPLICATION_JSON: >-
+        {"switch": {
+          "resolution": {"stuck-after": "10s", "interval": "5s", "deemed-recheck-after": "30s"},
+          "recon": {"enabled": false, "cutoff": "10s"},
+          "settlement": {"enabled": false}
+        }}

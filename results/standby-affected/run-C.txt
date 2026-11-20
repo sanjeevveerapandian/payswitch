@@ -1,0 +1,37 @@
+=== Run C ===
+Payments: 100000, concurrency 50, seed 42, chaos ON, switch crash at 50%
+Load: 1709.2 s, 59 payments/s (TPS, as sent by 50 concurrent clients)
+HTTP status from the PSP (-1 = no answer at all): {-1=150, 200=97166, 500=50, 502=2634}
+Customer was told: {ERROR=2834, FAILED=8921, PENDING=127, REVERSED=6949, SUCCESS=81169}
+Latency, all requests:   p50 358 ms, p95 1199 ms, p99 5379 ms, max 290243 ms (n=100000)
+Latency, answered (200): p50 362 ms, p95 1106 ms, p99 5348 ms, max 9051 ms (n=97166)
+Crash:
+  2026-11-20T10:01:56.212037500Z  CRASH: docker compose kill switch
+  2026-11-20T10:02:01.956020200Z  CRASH: switch killed; waiting 5000 ms
+  2026-11-20T10:02:06.969080Z  RESTART: docker compose start switch
+  2026-11-20T10:02:08.222419500Z  RESTART: switch container started (it needs a few seconds to boot and run its startup recovery)
+Told PENDING or no answer, finished later: 50 SUCCESS, 77 REVERSED, 9 FAILED; 2825 never reached the switch (no money moved)
+PASS  8) no customer was told something that later changed: 0 broken
+
+MONEY AUDIT: PASS
+  PASS  1) total customer money unchanged: Rs 171040000.00 now, Rs 171040000.00 at the start
+  PASS  2) no payment left unfinished: 0 in DEBIT_SENT / CREDIT_SENT / REVERSAL_SENT / DEEMED_APPROVED (or any other non-final state)
+  PASS  3) no txnId debited or credited twice: 88434 txnIds with bank entries, 0 with a double movement
+  PASS  4) every outcome matches the money moved: 81390 SUCCESS with exactly one debit + one credit, 15984 FAILED/REVERSED with zero net effect; 0 wrong
+  PASS  5) every customer's balance explained by the switch: 906 customers checked, 0 wrong
+  PASS  6) settlement squared up: every SWITCH_SETTLEMENT 0, central ledger balanced, 1 cycle(s) with net positions summing to 0; 0 problem(s)
+  PASS  7) recon exceptions == 0: 97374 txnIds reconciled, 0 exceptions
+Final states: {FAILED=8940, REVERSED=7044, SUCCESS=81390}
+Recon (latest line per txnId): {MATCHED=97374}
+Settlement: cycle 1 SETTLED: 81390 payments, gross 10777793607 paise, net moved 131090370 paise (98.78% saved), net positions {BANKA=-54108710, BANKB=-76981660, BANKC=131090370}
+Help needed:
+  9212  bank answer UNKNOWN at least once (timeout / HTTP 500), resolved by status checks
+  3615  outcome confirmed by a status check (debit or credit found at the bank)
+  1  found in INITIATED after a crash, closed as FAILED (never sent to a bank)
+  0  reached DEEMED_APPROVED
+  0  finished by recon (RESOLVED_DEEMED)
+  7044  reversed (payer refunded)
+  1191  declined for insufficient funds
+Audit time: prepare 398 s, checks 6 s
+Total runtime (load + audit): 2114.6 s
+RESULT: PASS

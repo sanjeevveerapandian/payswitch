@@ -5,6 +5,7 @@ import com.payswitch.common.bank.DeclineReason;
 import com.payswitch.common.bank.OpType;
 import java.time.Duration;
 import java.util.Random;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.function.Supplier;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -97,8 +98,9 @@ public class ChaosEngine {
             decision = decide(s, dice.nextDouble());
         }
 
-        if (s.delayMs() > 0) {
-            sleep(Duration.ofMillis(s.delayMs()));
+        long delay = delayFor(s);
+        if (delay > 0) {
+            sleep(Duration.ofMillis(delay));
         }
 
         switch (decision) {
@@ -130,6 +132,15 @@ public class ChaosEngine {
                 return operation.get();
             }
         }
+    }
+
+    /**
+     * delayMs plus a random 0..delayJitterMs. The random part comes from ThreadLocalRandom, NOT from
+     * the seeded dice: a seed must keep producing the same decisions whatever the delays are.
+     */
+    static long delayFor(ChaosSettings s) {
+        long jitter = s.delayJitterMs() > 0 ? ThreadLocalRandom.current().nextLong(s.delayJitterMs() + 1) : 0;
+        return s.delayMs() + jitter;
     }
 
     private static void sleep(Duration duration) {

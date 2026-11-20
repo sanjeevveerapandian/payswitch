@@ -1,0 +1,7 @@
+# Phase 10: the "loadtest" profile adds 300 extra customers to this bank (cust001..cust300@<handle>),
+# enough people and money for a 1 lakh payment run. Used by docker-compose.loadtest.yml.
+#
+# Not on by default: the normal demo keeps its few named customers (Ravi, Meena, Anu...).
+spring:
+  flyway:
+    locations: classpath:db/bank/migration,classpath:db/bank/seed/${bank.code},classpath:db/bank/loadtest/${bank.code}

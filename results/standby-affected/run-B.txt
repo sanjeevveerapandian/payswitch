@@ -1,0 +1,32 @@
+=== Run B ===
+Payments: 100000, concurrency 50, seed 42, chaos ON, switch crash none
+Load: 2615.5 s, 38 payments/s (TPS, as sent by 50 concurrent clients)
+HTTP status from the PSP (-1 = no answer at all): {-1=214, 200=99766, 502=20}
+Customer was told: {ERROR=234, FAILED=9167, PENDING=247, REVERSED=7047, SUCCESS=83305}
+Latency, all requests:   p50 364 ms, p95 1233 ms, p99 5472 ms, max 703070 ms (n=100000)
+Latency, answered (200): p50 364 ms, p95 1100 ms, p99 5377 ms, max 699513 ms (n=99766)
+Told PENDING or no answer, finished later: 97 SUCCESS, 150 REVERSED, 20 FAILED; 214 never reached the switch (no money moved)
+PASS  8) no customer was told something that later changed: 0 broken
+
+MONEY AUDIT: PASS
+  PASS  1) total customer money unchanged: Rs 171040000.00 now, Rs 171040000.00 at the start
+  PASS  2) no payment left unfinished: 0 in DEBIT_SENT / CREDIT_SENT / REVERSAL_SENT / DEEMED_APPROVED (or any other non-final state)
+  PASS  3) no txnId debited or credited twice: 90793 txnIds with bank entries, 0 with a double movement
+  PASS  4) every outcome matches the money moved: 83577 SUCCESS with exactly one debit + one credit, 16408 FAILED/REVERSED with zero net effect; 0 wrong
+  PASS  5) every customer's balance explained by the switch: 906 customers checked, 0 wrong
+  PASS  6) settlement squared up: every SWITCH_SETTLEMENT 0, central ledger balanced, 1 cycle(s) with net positions summing to 0; 0 problem(s)
+  PASS  7) recon exceptions == 0: 99985 txnIds reconciled, 0 exceptions
+Final states: {FAILED=9192, REVERSED=7216, SUCCESS=83577}
+Recon (latest line per txnId): {MATCHED=99985}
+Settlement: cycle 1 SETTLED: 83577 payments, gross 10997228212 paise, net moved 149649463 paise (98.64% saved), net positions {BANKA=-149649463, BANKB=101544528, BANKC=48104935}
+Help needed:
+  9624  bank answer UNKNOWN at least once (timeout / HTTP 500), resolved by status checks
+  3689  outcome confirmed by a status check (debit or credit found at the bank)
+  0  found in INITIATED after a crash, closed as FAILED (never sent to a bank)
+  1  reached DEEMED_APPROVED
+  0  finished by recon (RESOLVED_DEEMED)
+  7216  reversed (payer refunded)
+  1254  declined for insufficient funds
+Audit time: prepare 845 s, checks 6 s
+Total runtime (load + audit): 3466.6 s
+RESULT: PASS

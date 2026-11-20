@@ -1,0 +1,74 @@
+[2026-11-20T09:42:55.202311500Z] Total customer money before the run: Rs 171040000.00
+[2026-11-20T09:42:55.522922300Z] Chaos ON {delayJitterMs=300, errorRate=0.03, declineRate=0.05, delayMs=0, dropResponseRate=0.02, statusErrorRate=0.05} on [http://localhost:8081, http://localhost:8082, http://localhost:8084]
+[2026-11-20T09:42:55.847216800Z] Sending 100000 payments, 50 at a time, seed 42, chaos ON, switch crash at payment 50000
+[2026-11-20T09:43:56.958710200Z] 5000 / 100000 done (5%), 82 payments/s
+[2026-11-20T09:44:50.488086400Z] 10000 / 100000 done (10%), 87 payments/s
+[2026-11-20T09:45:43.558298700Z] 15000 / 100000 done (15%), 89 payments/s
+[2026-11-20T09:46:38.688738300Z] 20000 / 100000 done (20%), 90 payments/s
+[2026-11-20T09:52:18.362091Z] 25000 / 100000 done (25%), 44 payments/s
+[2026-11-20T09:53:13.498379900Z] 30000 / 100000 done (30%), 49 payments/s
+[2026-11-20T09:54:07.042787100Z] 35000 / 100000 done (35%), 52 payments/s
+[2026-11-20T09:55:00.606260400Z] 40000 / 100000 done (40%), 55 payments/s
+[2026-11-20T09:58:42.121407900Z] 45000 / 100000 done (45%), 48 payments/s
+[2026-11-20T10:01:56.222960500Z] CRASH: docker compose kill switch
+[2026-11-20T10:01:56.770758300Z] 50000 / 100000 done (50%), 44 payments/s
+[2026-11-20T10:02:01.956020200Z] CRASH: switch killed; waiting 5000 ms
+[2026-11-20T10:02:06.969080Z] RESTART: docker compose start switch
+[2026-11-20T10:02:08.222419500Z] RESTART: switch container started (it needs a few seconds to boot and run its startup recovery)
+[2026-11-20T10:02:55.043602900Z] 55000 / 100000 done (55%), 46 payments/s
+[2026-11-20T10:04:01.387586600Z] 60000 / 100000 done (60%), 47 payments/s
+[2026-11-20T10:04:57.006813Z] 65000 / 100000 done (65%), 49 payments/s
+[2026-11-20T10:05:51.990416400Z] 70000 / 100000 done (70%), 51 payments/s
+[2026-11-20T10:06:46.509288900Z] 75000 / 100000 done (75%), 52 payments/s
+[2026-11-20T10:07:43.929277900Z] 80000 / 100000 done (80%), 54 payments/s
+[2026-11-20T10:08:38.099975800Z] 85000 / 100000 done (85%), 55 payments/s
+[2026-11-20T10:09:32.426940600Z] 90000 / 100000 done (90%), 56 payments/s
+[2026-11-20T10:10:26.554329Z] 95000 / 100000 done (95%), 58 payments/s
+[2026-11-20T10:11:25.036419900Z] 100000 / 100000 done (100%), 59 payments/s
+[2026-11-20T10:11:25.166717400Z] Chaos OFF on [http://localhost:8081, http://localhost:8082, http://localhost:8084]
+[2026-11-20T10:11:25.166717400Z] Load done. Auditing (chaos is off now)...
+[2026-11-20T10:11:25.245267200Z] stuck payments (resolver still working): 0
+[2026-11-20T10:11:25.268693900Z] recon 2026-11-20T09:42:56.071507Z .. 2026-11-20T10:11:18.722748Z
+[2026-11-20T10:15:52.628153300Z] recon PARTIAL {"AMOUNT_MISMATCH":0,"BANK_ONLY":0,"DEEMED_UNRESOLVED":0,"MATCHED":97100,"RESOLVED_DEEMED":0,"SKIPPED_TOO_NEW":274,"SWITCH_ONLY":0,"UNFINISHED":0}, running it again shortly...
+[2026-11-20T10:17:54.431836600Z] recon COMPLETED: {"AMOUNT_MISMATCH":0,"BANK_ONLY":0,"DEEMED_UNRESOLVED":0,"MATCHED":97374,"RESOLVED_DEEMED":0,"SKIPPED_TOO_NEW":0,"SWITCH_ONLY":0,"UNFINISHED":0}
+[2026-11-20T10:17:54.446364400Z] unfinished payments after recon: 0
+[2026-11-20T10:18:03.784413500Z] settlement cycle 1 SETTLED: 81390 payments, gross 10777793607 paise, net moved 131090370 paise (98.78% saved), net positions {BANKA=-54108710, BANKB=-76981660, BANKC=131090370}
+
+=== Run C ===
+Payments: 100000, concurrency 50, seed 42, chaos ON, switch crash at 50%
+Load: 1709.2 s, 59 payments/s (TPS, as sent by 50 concurrent clients)
+HTTP status from the PSP (-1 = no answer at all): {-1=150, 200=97166, 500=50, 502=2634}
+Customer was told: {ERROR=2834, FAILED=8921, PENDING=127, REVERSED=6949, SUCCESS=81169}
+Latency, all requests:   p50 358 ms, p95 1199 ms, p99 5379 ms, max 290243 ms (n=100000)
+Latency, answered (200): p50 362 ms, p95 1106 ms, p99 5348 ms, max 9051 ms (n=97166)
+Crash:
+  2026-11-20T10:01:56.212037500Z  CRASH: docker compose kill switch
+  2026-11-20T10:02:01.956020200Z  CRASH: switch killed; waiting 5000 ms
+  2026-11-20T10:02:06.969080Z  RESTART: docker compose start switch
+  2026-11-20T10:02:08.222419500Z  RESTART: switch container started (it needs a few seconds to boot and run its startup recovery)
+Told PENDING or no answer, finished later: 50 SUCCESS, 77 REVERSED, 9 FAILED; 2825 never reached the switch (no money moved)
+PASS  8) no customer was told something that later changed: 0 broken
+
+MONEY AUDIT: PASS
+  PASS  1) total customer money unchanged: Rs 171040000.00 now, Rs 171040000.00 at the start
+  PASS  2) no payment left unfinished: 0 in DEBIT_SENT / CREDIT_SENT / REVERSAL_SENT / DEEMED_APPROVED (or any other non-final state)
+  PASS  3) no txnId debited or credited twice: 88434 txnIds with bank entries, 0 with a double movement
+  PASS  4) every outcome matches the money moved: 81390 SUCCESS with exactly one debit + one credit, 15984 FAILED/REVERSED with zero net effect; 0 wrong
+  PASS  5) every customer's balance explained by the switch: 906 customers checked, 0 wrong
+  PASS  6) settlement squared up: every SWITCH_SETTLEMENT 0, central ledger balanced, 1 cycle(s) with net positions summing to 0; 0 problem(s)
+  PASS  7) recon exceptions == 0: 97374 txnIds reconciled, 0 exceptions
+Final states: {FAILED=8940, REVERSED=7044, SUCCESS=81390}
+Recon (latest line per txnId): {MATCHED=97374}
+Settlement: cycle 1 SETTLED: 81390 payments, gross 10777793607 paise, net moved 131090370 paise (98.78% saved), net positions {BANKA=-54108710, BANKB=-76981660, BANKC=131090370}
+Help needed:
+  9212  bank answer UNKNOWN at least once (timeout / HTTP 500), resolved by status checks
+  3615  outcome confirmed by a status check (debit or credit found at the bank)
+  1  found in INITIATED after a crash, closed as FAILED (never sent to a bank)
+  0  reached DEEMED_APPROVED
+  0  finished by recon (RESOLVED_DEEMED)
+  7044  reversed (payer refunded)
+  1191  declined for insufficient funds
+Audit time: prepare 398 s, checks 6 s
+Total runtime (load + audit): 2114.6 s
+RESULT: PASS
+
