@@ -9,16 +9,19 @@ import com.payswitch.common.bank.DebitRequest;
 import com.payswitch.common.bank.DeclineReason;
 import com.payswitch.common.bank.OpType;
 import com.payswitch.common.bank.ReverseRequest;
+import com.payswitch.observability.TxnMdc;
 import com.payswitch.switchservice.bank.BankCallResult;
 import com.payswitch.switchservice.bank.BankClient;
 import com.payswitch.switchservice.domain.Txn;
 import com.payswitch.switchservice.domain.TxnState;
+import com.payswitch.switchservice.metrics.SwitchMetrics;
 import com.payswitch.switchservice.retry.Retrier;
 import com.payswitch.switchservice.routing.BankRoute;
 import com.payswitch.switchservice.routing.BankRouter;
 import com.payswitch.switchservice.routing.Vpa;
 import java.util.EnumSet;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
 import org.slf4j.Logger;
@@ -67,12 +70,15 @@ public class PaymentFlow {
     private final BankRouter router;
     private final BankClient banks;
     private final Retrier retrier;
+    private final SwitchMetrics metrics;
 
-    public PaymentFlow(TransactionService txns, BankRouter router, BankClient banks, Retrier retrier) {
+    public PaymentFlow(TransactionService txns, BankRouter router, BankClient banks, Retrier retrier,
+                       SwitchMetrics metrics) {
         this.txns = txns;
         this.router = router;
         this.banks = banks;
         this.retrier = retrier;
+        this.metrics = metrics;
     }
 
     // =========================================================================================
@@ -81,6 +87,12 @@ public class PaymentFlow {
 
     /** Debit, then credit, then (only if the credit is declined) one reversal. */
     public void firstAttempt(String txnId) {
+        try (TxnMdc.Scope mdc = TxnMdc.txn(txnId)) {
+            firstAttemptInScope(txnId);
+        }
+    }
+
+    private void firstAttemptInScope(String txnId) {
         Txn txn = txns.get(txnId);
 
         txn = move(txn, TxnState.DEBIT_SENT, "DEBIT_REQUESTED:" + txn.payerBank());
@@ -150,9 +162,24 @@ public class PaymentFlow {
      * else moves the payment while we work, the optimistic lock stops us and we leave it to them.
      */
     public void resolve(String txnId) {
+        // Runs on the request thread, the inline-resolution pool, the ResolverJob and recon: set the
+        // MDC here, so every one of those logs this payment's txnId.
+        try (TxnMdc.Scope mdc = TxnMdc.txn(txnId)) {
+            resolveInScope(txnId);
+        }
+    }
+
+    private void resolveInScope(String txnId) {
+        TxnState stuckIn = null;                              // where the payment was when we started
+        TxnState reached = null;                              // where we left it
         try {
             for (int step = 0; step < 10; step++) {          // a payment needs at most ~5 steps
                 Txn txn = txns.get(txnId);
+                if (stuckIn == null) {
+                    stuckIn = txn.state();
+                    TxnMdc.state(txnId, stuckIn.name());
+                }
+                reached = txn.state();
                 Txn after = switch (txn.state()) {
                     // DEBIT_SENT is saved BEFORE the debit goes out, so INITIATED means no bank was
                     // ever asked. Nothing can have moved: close it. (If the original thread is somehow
@@ -165,6 +192,9 @@ public class PaymentFlow {
                     case DEEMED_APPROVED -> recheckDeemed(txn);
                     default -> null;                          // final: nothing to do
                 };
+                if (after != null) {
+                    reached = after.state();
+                }
                 if (after == null || after.state() == txn.state()) {
                     return;                                   // done, or nothing more to do right now
                 }
@@ -174,6 +204,10 @@ public class PaymentFlow {
         } catch (Interrupted stop) {
             // The interrupt flag stays set for whoever called us.
             log.info("Txn {}: interrupted (shutting down?). Left as it was; it will be resolved after restart.", txnId);
+        } finally {
+            if (stuckIn != null && reached != null && reached != stuckIn) {
+                metrics.resolverFixed(stuckIn);
+            }
         }
     }
 
@@ -189,8 +223,14 @@ public class PaymentFlow {
      * shutting down), the last UNKNOWN is NOT evidence that the bank stopped answering: it only means
      * we stopped asking. So we refuse to return it, and nobody gets to decide on it.
      */
-    private BankCallResult askWithRetries(Supplier<BankCallResult> call, Predicate<BankCallResult> done) {
-        BankCallResult result = retrier.run(call, done);
+    private BankCallResult askWithRetries(BankRoute bank, String op, Supplier<BankCallResult> call,
+                                          Predicate<BankCallResult> done) {
+        AtomicInteger attempts = new AtomicInteger();
+        BankCallResult result = retrier.run(() -> {
+            attempts.incrementAndGet();
+            return call.get();
+        }, done);
+        metrics.retries(bank.code(), op, attempts.get() - 1);
         if (Thread.currentThread().isInterrupted()) {
             throw new Interrupted();
         }
@@ -208,7 +248,7 @@ public class PaymentFlow {
      * </ul>
      */
     private Txn resolveDebit(Txn txn) {
-        BankCallResult check = askWithRetries(
+        BankCallResult check = askWithRetries(payerBank(txn), "STATUS_CHECK",
                 () -> banks.statusCheckAndFence(payerBank(txn), txn.txnId(), OpType.DEBIT),
                 r -> r.outcome() != UNKNOWN);
         return switch (check.outcome()) {
@@ -232,7 +272,7 @@ public class PaymentFlow {
      * </ul>
      */
     private Txn resolveCredit(Txn txn) {
-        BankCallResult check = askWithRetries(
+        BankCallResult check = askWithRetries(payeeBank(txn), "STATUS_CHECK",
                 () -> banks.statusCheckAndFence(payeeBank(txn), txn.txnId(), OpType.CREDIT),
                 r -> r.outcome() != UNKNOWN);
         return switch (check.outcome()) {
@@ -257,7 +297,7 @@ public class PaymentFlow {
      * </ul>
      */
     private Txn recheckDeemed(Txn txn) {
-        BankCallResult check = askWithRetries(
+        BankCallResult check = askWithRetries(payeeBank(txn), "STATUS_CHECK",
                 () -> banks.statusCheckAndFence(payeeBank(txn), txn.txnId(), OpType.CREDIT),
                 r -> r.outcome() != UNKNOWN);
         return switch (check.outcome()) {
@@ -276,7 +316,7 @@ public class PaymentFlow {
      * it again never refunds twice: a repeat just gets the saved answer back.
      */
     private Txn resolveReversal(Txn txn) {
-        BankCallResult reversal = askWithRetries(
+        BankCallResult reversal = askWithRetries(payerBank(txn), "REVERSE",
                 () -> banks.reverse(payerBank(txn), new ReverseRequest(txn.txnId())),
                 this::isFinalReversal);
         if (isFinalReversal(reversal)) {

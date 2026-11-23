@@ -24,6 +24,7 @@ import com.payswitch.switchservice.TestcontainersConfig;
 import com.payswitch.switchservice.bank.BankCallResult;
 import com.payswitch.switchservice.bank.BankClient;
 import com.payswitch.switchservice.domain.TxnState;
+import com.payswitch.switchservice.metrics.SwitchMetrics;
 import com.payswitch.switchservice.recon.BankReconClient;
 import com.payswitch.switchservice.recon.ReconRepository;
 import com.payswitch.switchservice.recon.ReconciliationService;
@@ -114,6 +115,9 @@ class SettlementIntegrationTest {
     @Autowired
     private JdbcTemplate jdbcTemplate;
 
+    @Autowired
+    private SwitchMetrics metrics;
+
     /** What each bank's /recon/entries returns: bank code -> entries. */
     private final Map<String, List<ReconEntry>> bankBooks = new ConcurrentHashMap<>();
 
@@ -165,6 +169,31 @@ class SettlementIntegrationTest {
         verify(adviceClient).send(bank("BANKA"), argThat(a -> a.equals(new SettlementAdvice(r.cycleId(), -600_000))));
         verify(adviceClient).send(bank("BANKB"), argThat(a -> a.equals(new SettlementAdvice(r.cycleId(), 400_000))));
         verify(adviceClient).send(bank("BANKC"), argThat(a -> a.equals(new SettlementAdvice(r.cycleId(), 200_000))));
+    }
+
+    /** Phase 11: the "last settlement" gauge, and that a restarted switch reads it back from the database. */
+    @Test
+    void theLastSettledNetPositionsAreAGaugeThatSurvivesARestart() {
+        Instant from = dbNow();
+        paid("ravi@banka", "anu@bankb", 500 * RUPEE);
+        paid("anu@bankb", "kumar@bankc", 200 * RUPEE);
+        reconcile(from);
+
+        settlement.closeAndSettle(null);
+
+        assertEquals(-500 * RUPEE, net("BANKA"));
+        assertEquals(300 * RUPEE, net("BANKB"));
+        assertEquals(200 * RUPEE, net("BANKC"));
+
+        // A restart starts with empty gauges; pretend they hold nonsense, then run the startup hook.
+        metrics.settlementNet("BANKA", 42);
+        settlement.publishLastSettledPositions();
+
+        assertEquals(-500 * RUPEE, net("BANKA"), "read back from the last SETTLED cycle in the database");
+    }
+
+    private long net(String bank) {
+        return (long) metrics.registry().get("payswitch.settlement.net.amount.paise").tag("bank", bank).gauge().value();
     }
 
     @Test

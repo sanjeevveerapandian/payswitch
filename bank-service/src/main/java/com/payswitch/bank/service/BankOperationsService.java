@@ -1,6 +1,7 @@
 package com.payswitch.bank.service;
 
 import com.payswitch.bank.db.AccountRepository;
+import com.payswitch.bank.metrics.BankMetrics;
 import com.payswitch.bank.db.AccountRow;
 import com.payswitch.bank.db.JournalRepository;
 import com.payswitch.bank.db.ProcessedRequestRepository;
@@ -24,6 +25,8 @@ import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.function.Supplier;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -37,15 +40,19 @@ import org.springframework.transaction.annotation.Transactional;
 @Service
 public class BankOperationsService {
 
+    private static final Logger log = LoggerFactory.getLogger(BankOperationsService.class);
+
     public static final String SWITCH_SETTLEMENT = "SWITCH_SETTLEMENT";
 
     private final AccountRepository accounts;
     private final JournalRepository journal;
     private final ProcessedRequestRepository processed;
     private final PostingService posting;
+    private final BankMetrics metrics;
 
     public BankOperationsService(AccountRepository accounts, JournalRepository journal,
-                                 ProcessedRequestRepository processed, PostingService posting) {
+                                 ProcessedRequestRepository processed, PostingService posting, BankMetrics metrics) {
+        this.metrics = metrics;
         this.accounts = accounts;
         this.journal = journal;
         this.processed = processed;
@@ -153,14 +160,19 @@ public class BankOperationsService {
         Optional<BankResponse> saved = processed.find(txnId, op);
         if (saved.isPresent()) {
             CheckResult result = saved.get().reason() == DeclineReason.FENCED ? CheckResult.FENCED : CheckResult.FOUND;
+            metrics.processed("STATUS_CHECK", result.name());
+            log.info("STATUS-CHECK {} {}: {} ({})", op, txnId, result, BankMetrics.resultOf(saved.get()));
             return new StatusCheckResponse(txnId, op, result, saved.get());
         }
         if (!request.fence()) {
+            metrics.processed("STATUS_CHECK", CheckResult.NOT_FOUND.name());
             return new StatusCheckResponse(txnId, op, CheckResult.NOT_FOUND, null);
         }
         BankResponse tombstone = BankResponse.declined(txnId, op, DeclineReason.FENCED,
                 "Fenced by a status check: this " + op + " will never be processed");
         processed.insertIfAbsent(tombstone);        // always inserts: we hold the txnId lock
+        metrics.processed("STATUS_CHECK", "FENCED_NOW");
+        log.info("STATUS-CHECK {} {}: no record, FENCED now", op, txnId);
         return new StatusCheckResponse(txnId, op, CheckResult.FENCED, tombstone);
     }
 
@@ -179,11 +191,17 @@ public class BankOperationsService {
         // txnId run one after another, never interleaved. Released automatically at commit/rollback.
         processed.lockTxn(txnId);
         if (!processed.claim(txnId, op)) {
-            return processed.find(txnId, op).orElseThrow(() ->
+            BankResponse saved = processed.find(txnId, op).orElseThrow(() ->
                     new IllegalStateException("Claimed row has no saved response: " + txnId + "/" + op));
+            metrics.answeredFromSaved(op.name(), saved);
+            log.info("{} {}: already answered, sending the saved answer again ({})", op, txnId,
+                    BankMetrics.resultOf(saved));
+            return saved;
         }
         BankResponse response = work.get();
         processed.complete(response);
+        metrics.processed(op.name(), BankMetrics.resultOf(response));
+        log.info("{} {}: {}", op, txnId, BankMetrics.resultOf(response));
         return response;
     }
 

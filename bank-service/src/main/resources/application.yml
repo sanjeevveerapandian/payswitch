@@ -30,9 +30,23 @@ spring:
       # /admin/chaos when chaos is off) would answer 405 instead of a clear 404.
       add-mappings: false
 
-# Only the health endpoint is exposed: GET /actuator/health
+# Phase 11: metrics for Prometheus, and one JSON object per log line.
 management:
   endpoints:
     web:
       exposure:
-        include: health
+        include: health,prometheus     # GET /actuator/prometheus: every metric, in Prometheus' text format
+  metrics:
+    tags:
+      application: ${spring.application.name}   # on every metric, so dashboards can tell services apart
+      bank: ${bank.code}                          # which of the three banks this instance is
+
+logging:
+  structured:
+    format:
+      # Built into Spring Boot 3.4+: no extra library. Every line becomes one JSON object with
+      # @timestamp, level, logger_name, message, and every MDC key (txnId, state) as its own field.
+      console: logstash
+    json:
+      add:
+        service: bank-service-${bank.code}

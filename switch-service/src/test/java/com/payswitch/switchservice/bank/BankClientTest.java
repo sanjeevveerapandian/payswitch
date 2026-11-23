@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.payswitch.common.bank.DebitRequest;
 import com.payswitch.common.bank.DeclineReason;
+import com.payswitch.switchservice.metrics.SwitchMetrics;
 import com.payswitch.switchservice.routing.BankRoute;
 import com.payswitch.switchservice.routing.SwitchProperties;
 import com.sun.net.httpserver.HttpExchange;
@@ -46,6 +47,7 @@ class BankClientTest {
     private HttpServer server;
     private volatile Handler handler;
     private BankClient client;
+    private final SwitchMetrics metrics = SwitchMetrics.inMemory();
 
     interface Handler {
         void handle(HttpExchange exchange) throws IOException;
@@ -59,7 +61,7 @@ class BankClientTest {
         // Short read timeout so the timeout test is quick.
         client = new BankClient(RestClient.builder(), new SwitchProperties(
                 new SwitchProperties.Http(Duration.ofSeconds(1), Duration.ofMillis(300)),
-                Map.of("banka", bank(server.getAddress().getPort()))));
+                Map.of("banka", bank(server.getAddress().getPort()))), metrics);
     }
 
     @AfterEach

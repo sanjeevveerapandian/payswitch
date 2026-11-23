@@ -8,6 +8,7 @@ import com.payswitch.common.bank.OpType;
 import com.payswitch.common.bank.ReverseRequest;
 import com.payswitch.common.bank.StatusCheckRequest;
 import com.payswitch.common.bank.StatusCheckResponse;
+import com.payswitch.switchservice.metrics.SwitchMetrics;
 import com.payswitch.switchservice.routing.BankRoute;
 import com.payswitch.switchservice.routing.SwitchProperties;
 import java.io.EOFException;
@@ -44,8 +45,14 @@ public class BankClient {
     private static final Logger log = LoggerFactory.getLogger(BankClient.class);
 
     private final RestClient http;
+    private final SwitchMetrics metrics;
 
-    public BankClient(RestClient.Builder builder, SwitchProperties properties) {
+    /**
+     * The builder comes from Spring Boot, so it already carries the X-Txn-Id interceptor: every call
+     * made while working on a payment tells the bank which payment it is (for the bank's logs).
+     */
+    public BankClient(RestClient.Builder builder, SwitchProperties properties, SwitchMetrics metrics) {
+        this.metrics = metrics;
         SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
         factory.setConnectTimeout(properties.http().connectTimeout());
         factory.setReadTimeout(properties.http().readTimeout());
@@ -74,6 +81,7 @@ public class BankClient {
      * </ul>
      */
     public BankCallResult statusCheckAndFence(BankRoute bank, String txnId, OpType op) {
+        long start = System.nanoTime();
         BankCallResult result;
         try {
             result = http.post()
@@ -91,6 +99,8 @@ public class BankClient {
         } catch (RuntimeException e) {
             result = BankCallResult.unknown("unexpected error: " + e.getClass().getSimpleName());
         }
+        metrics.bankCall(bank.code(), "STATUS_CHECK", result.outcome(), System.nanoTime() - start);
+        metrics.statusCheck(bank.code(), checkResult(result));
         if (result.outcome() == BankCallOutcome.UNKNOWN) {
             log.warn("{} STATUS-CHECK {} {} -> UNKNOWN ({})", bank.code(), op, txnId, result.detail());
         }
@@ -114,7 +124,17 @@ public class BankClient {
         };
     }
 
+    /** For the status-check metric: what did the bank tell us? */
+    static String checkResult(BankCallResult r) {
+        return switch (r.outcome()) {
+            case SUCCESS -> "FOUND_SUCCESS";
+            case DECLINED -> r.declineReason() == DeclineReason.FENCED ? "FENCED" : "FOUND_DECLINED";
+            case UNKNOWN -> "UNKNOWN";
+        };
+    }
+
     private BankCallResult call(BankRoute bank, String path, Object body, String txnId, OpType op) {
+        long start = System.nanoTime();
         BankCallResult result;
         try {
             result = http.post()
@@ -132,6 +152,7 @@ public class BankClient {
         } catch (RuntimeException e) {
             result = BankCallResult.unknown("unexpected error: " + e.getClass().getSimpleName());
         }
+        metrics.bankCall(bank.code(), op.name(), result.outcome(), System.nanoTime() - start);
         if (result.outcome() == BankCallOutcome.UNKNOWN) {
             log.warn("{} {} {} -> UNKNOWN ({})", bank.code(), op, txnId, result.detail());
         }

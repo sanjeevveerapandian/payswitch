@@ -1,5 +1,6 @@
 package com.payswitch.switchservice.service;
 
+import com.payswitch.observability.TxnMdc;
 import com.payswitch.switchservice.domain.TxnState;
 import java.time.Duration;
 import java.util.ArrayList;
@@ -87,10 +88,12 @@ public class ResolverJob {
                     // their lease runs out (or by the startup run after the restart).
                     return handled;
                 }
-                try {
+                try (TxnMdc.Scope mdc = TxnMdc.txn(txnId)) {
                     flow.resolve(txnId);
                 } catch (RuntimeException e) {
-                    log.error("Txn {}: resolver failed; it will be retried when its lease runs out.", txnId, e);
+                    try (TxnMdc.Scope mdc = TxnMdc.txn(txnId)) {
+                        log.error("Txn {}: resolver failed; it will be retried when its lease runs out.", txnId, e);
+                    }
                 }
             }
             handled.addAll(batch);

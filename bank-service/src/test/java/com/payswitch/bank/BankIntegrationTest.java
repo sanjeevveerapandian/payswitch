@@ -6,6 +6,7 @@ import com.payswitch.bank.service.LedgerAuditService;
 import java.util.UUID;
 import org.junit.jupiter.api.AfterEach;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.autoconfigure.actuate.observability.AutoConfigureObservability;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.simple.JdbcClient;
@@ -19,6 +20,8 @@ import org.springframework.jdbc.core.simple.JdbcClient;
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT, properties = "bank.code=BANKA")
 @Import(TestcontainersConfig.class)
+// Spring Boot tests switch metrics export off by default; on here, so /actuator/prometheus exists.
+@AutoConfigureObservability(tracing = false)
 abstract class BankIntegrationTest {
 
     @Autowired

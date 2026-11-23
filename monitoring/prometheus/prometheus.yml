@@ -1,0 +1,26 @@
+# Prometheus PULLS metrics: every 5 seconds it calls GET /actuator/prometheus on each service.
+# (The services never push. A service that is down simply shows up as "up == 0".)
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s        # how often the alert rules below are checked
+
+rule_files:
+  - /etc/prometheus/alerts.yml
+
+scrape_configs:
+  - job_name: psp
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets: ["psp:8080"]
+
+  - job_name: switch
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets: ["switch:8083"]
+
+  # One job for all three banks: same app, same metrics. The "bank" label (BANKA, BANKB, BANKC)
+  # comes from the bank itself (management.metrics.tags.bank).
+  - job_name: banks
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets: ["bank-a:8081", "bank-b:8082", "bank-c:8084"]

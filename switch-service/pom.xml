@@ -34,6 +34,16 @@
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-actuator</artifactId>
         </dependency>
+        <!-- Phase 11: txnId in every log line and on every outgoing call (shared filter + interceptor) -->
+        <dependency>
+            <groupId>com.payswitch</groupId>
+            <artifactId>observability</artifactId>
+        </dependency>
+        <!-- Phase 11: /actuator/prometheus, the metrics in the format Prometheus scrapes -->
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-registry-prometheus</artifactId>
+        </dependency>
         <!-- Spring JDBC: JdbcClient, transactions, connection pool -->
         <dependency>
             <groupId>org.springframework.boot</groupId>

@@ -35,6 +35,8 @@ flowchart LR
 | **Switch** | Finds each bank from the VPA handle (`@banka`, `@bankb`, `@bankc`), runs the payment as a state machine, resolves every unclear bank answer, reconciles with the banks and settles cycles. |
 | **Bank A / B / C** | The same app run three times. A double-entry ledger with idempotent debit, credit and reverse. |
 | `ledger-core` | The double-entry rules in plain Java, with no Spring or database. |
+| `observability` | The txnId filter, header interceptor and MDC helper every service shares. |
+| Prometheus + Grafana | Scrape every service's metrics; one provisioned dashboard and three alert rules. |
 
 ## A payment's life (the switch's state machine)
 
@@ -200,6 +202,57 @@ java -cp load-generator/target/load-generator-0.1.0-SNAPSHOT-all.jar com.payswit
 
 A 5,000 payment version runs automatically in `mvn verify` (`LoadChaosIT`), not in `mvn test`.
 
+## Watching it: metrics, dashboard, alerts and one payment's trail
+
+`docker compose up` also starts Prometheus and Grafana, already set up from files in `monitoring/`:
+
+| What | Where |
+|---|---|
+| Grafana dashboard (rows: Overview, Latency, Health, Banks, Money) | http://localhost:3000 (opens on it; admin / admin to edit) |
+| Prometheus, and the three alert rules | http://localhost:9090, http://localhost:9090/alerts |
+| One service's raw metrics | http://localhost:8083/actuator/prometheus (8080, 8081, 8082, 8084 for the others) |
+
+The metrics. Labels only ever take a few fixed values: never a txnId, VPA or amount.
+
+| Metric | Type | Labels |
+|---|---|---|
+| `payswitch_payments_total` | counter | `final_state` |
+| `payswitch_bank_call_seconds` | histogram (p50/p95/p99 in Grafana) | `bank`, `op`, `outcome` |
+| `payswitch_txns_in_state`, `payswitch_txns_stuck` | gauge (a DB count every 15 s) | `state` |
+| `payswitch_status_checks_total` | counter | `bank`, `result` |
+| `payswitch_retries_total` | counter | `bank`, `op` |
+| `payswitch_resolver_fixed_total` | counter | `from_state` |
+| `payswitch_recon_items_total` | counter | `category` |
+| `payswitch_settlement_net_amount_paise` | gauge (last settled cycle) | `bank` |
+| `bank_ops_total` | counter | `bank`, `op`, `result` |
+| `bank_idempotent_replays_total`, `bank_fenced_rejections_total` | counter | `bank`, `op` |
+| `bank_chaos_injected_total` | counter | `bank`, `mode` |
+| `psp_requests_total`, `psp_request_seconds` | counter, histogram | `result` |
+
+Alerts: **PaymentsStuck** (any payment stuck for 5 minutes), **ReconExceptions** (any recon item a
+human must look at), **BankUnknownRateHigh** (over 10% of calls to one bank get no clear answer
+for 2 minutes).
+
+Every log line is one JSON object. The PSP makes the txnId and sends it on as the `X-Txn-Id` header;
+the switch passes it to every bank call, and each service puts it into every log line about that
+payment. So one command shows a payment's whole story, from every container, in time order:
+
+```bash
+scripts/trace.sh TXN3F2A...          # add --raw for the JSON lines
+```
+
+```
+03:13:01.3717434  switch-service          INFO   INITIATED        Txn TXNF607...: created, BANKC -> BANKA
+03:13:01.5290918  bank-service-BANKC      INFO                    DEBIT TXNF607...: SUCCESS
+03:13:01.8571167  bank-service-BANKA      WARN                    CHAOS CREDIT TXNF607...: answering HTTP 500, nothing processed
+03:13:01.8623188  switch-service          WARN   CREDIT_SENT      BANKA CREDIT TXNF607... -> UNKNOWN (HTTP 500)
+03:13:01.9162420  bank-service-BANKA      INFO                    STATUS-CHECK CREDIT TXNF607...: no record, FENCED now
+03:13:01.9340175  switch-service          INFO   REVERSAL_SENT    Txn TXNF607...: CREDIT_SENT -> REVERSAL_SENT (CREDIT_DECLINED:FENCED)
+03:13:03.4214286  bank-service-BANKC      INFO                    REVERSE TXNF607...: SUCCESS
+03:13:03.4404116  switch-service          INFO   REVERSED         Txn TXNF607...: REVERSAL_SENT -> REVERSED (REVERSAL_OK)
+03:13:03.4536269  psp-service             INFO                    Txn TXNF607...: switch answered REVERSED (REVERSAL_OK)
+```
+
 ## Design decisions
 
 | Decision | Why |
@@ -219,6 +272,9 @@ A 5,000 payment version runs automatically in `mvn verify` (`LoadChaosIT`), not 
 | Retries with exponential backoff and jitter | Gives a struggling bank room to recover, and spreads retries so they do not all land at once. |
 | Background resolver with `FOR UPDATE SKIP LOCKED` and a lease | Many copies of the switch can run it at once without ever handling the same payment twice. |
 | The money auditor reads the databases with SQL, not the services' APIs | An auditor must not trust the code it audits. |
+| Metric labels are fixed small sets (state, bank, op), never a txnId | Every label combination is a separate time series; one per payment would sink Prometheus. Find one payment in the logs instead. |
+| Counters for final states are bumped only after the database commit | A rolled-back state change must not be counted. |
+| The txnId travels as a header and sits in the MDC, set and cleared by a filter | Every log line about a payment can be found by its id, and a reused thread never logs the previous request's id. |
 | Multilateral net settlement of reconciled payments only | Far less money moves between banks, and nothing is settled that the banks' own books do not confirm. |
 
 ## Tests

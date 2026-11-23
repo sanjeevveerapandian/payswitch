@@ -1,0 +1,44 @@
+# Alert rules. Prometheus checks each expression every evaluation_interval; an alert FIRES once the
+# expression has been true for the whole "for" duration (so a 10-second blip does not wake anyone).
+# Firing alerts show at http://localhost:9090/alerts (and in Grafana). Sending them to a phone would
+# need Alertmanager, which this simulator leaves out.
+groups:
+  - name: payswitch
+    rules:
+      # Payments the resolver should have finished by now. Under normal load this is 0: the resolver
+      # picks a payment up after stuck-after and finishes it within seconds.
+      - alert: PaymentsStuck
+        expr: sum by (state) (payswitch_txns_stuck) > 0
+        for: 5m
+        labels:
+          severity: page
+        annotations:
+          summary: "{{ $value }} payment(s) stuck in {{ $labels.state }} for 5 minutes"
+          description: >-
+            Payments have been in {{ $labels.state }} longer than switch.resolution.stuck-after for 5
+            minutes. A bank may be down, or the resolver is not running. Money may be in transit.
+
+      # Recon found a disagreement between the switch's books and a bank's. Recon never fixes these
+      # by itself (except DEEMED_APPROVED with proof): a human must look. Any one is worth an alert.
+      - alert: ReconExceptions
+        expr: sum by (category) (increase(payswitch_recon_items_total{category!~"MATCHED|RESOLVED_DEEMED"}[1h])) > 0
+        labels:
+          severity: page
+        annotations:
+          summary: "Recon found {{ $value }} {{ $labels.category }} item(s) in the last hour"
+          description: "See GET /recon/runs/{id} on the switch for the txnIds. Manual review needed."
+
+      # More than 10% of calls to one bank end with no clear answer (timeout, HTTP 5xx, dropped
+      # connection). Every one of those needs a status check; the bank is probably in trouble.
+      - alert: BankUnknownRateHigh
+        expr: |
+          sum by (bank) (rate(payswitch_bank_call_seconds_count{outcome="UNKNOWN"}[1m]))
+            /
+          sum by (bank) (rate(payswitch_bank_call_seconds_count[1m]))
+            > 0.10
+        for: 2m
+        labels:
+          severity: warn
+        annotations:
+          summary: "{{ $labels.bank }}: {{ $value | humanizePercentage }} of calls get no clear answer"
+          description: "Over 10% UNKNOWN outcomes for 2 minutes. Check that bank's health and its chaos settings."

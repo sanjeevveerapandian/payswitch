@@ -1,6 +1,7 @@
 package com.payswitch.switchservice.service;
 
 import com.payswitch.common.pay.PayState;
+import com.payswitch.observability.TxnMdc;
 import com.payswitch.common.pay.ReqPay;
 import com.payswitch.common.pay.RespPay;
 import com.payswitch.common.pay.TxnDetails;
@@ -45,7 +46,17 @@ public class PaymentOrchestrator {
         this.resolutionExecutor = resolutionExecutor;
     }
 
+    /**
+     * The txnId in the body is the truth (the X-Txn-Id header is only for logs), so the MDC is set
+     * from the body here: every log line of this payment carries it, even if a caller sent no header.
+     */
     public RespPay pay(ReqPay request) {
+        try (TxnMdc.Scope mdc = TxnMdc.txn(request.txnId())) {
+            return payInScope(request);
+        }
+    }
+
+    private RespPay payInScope(ReqPay request) {
         Txn txn;
         try {
             txn = txns.create(request.txnId(), request.payerVpa(), request.payeeVpa(), request.amount());

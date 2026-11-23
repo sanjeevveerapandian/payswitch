@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import com.payswitch.common.bank.DeclineReason;
 import com.payswitch.common.bank.OpType;
 import com.payswitch.common.bank.ReverseRequest;
+import com.payswitch.switchservice.metrics.SwitchMetrics;
 import com.payswitch.switchservice.routing.BankRoute;
 import com.payswitch.switchservice.routing.SwitchProperties;
 import com.sun.net.httpserver.HttpServer;
@@ -30,6 +31,7 @@ class BankClientStatusCheckTest {
     private final AtomicReference<Integer> status = new AtomicReference<>(200);
     private final AtomicReference<String> lastRequestBody = new AtomicReference<>();
     private BankClient client;
+    private final SwitchMetrics metrics = SwitchMetrics.inMemory();
     private BankRoute bank;
 
     @BeforeEach
@@ -47,7 +49,7 @@ class BankClientStatusCheckTest {
         server.start();
         bank = new BankRoute("BANKA", URI.create("http://localhost:" + server.getAddress().getPort()));
         client = new BankClient(RestClient.builder(), new SwitchProperties(
-                new SwitchProperties.Http(Duration.ofSeconds(1), Duration.ofSeconds(1)), Map.of("banka", bank)));
+                new SwitchProperties.Http(Duration.ofSeconds(1), Duration.ofSeconds(1)), Map.of("banka", bank)), metrics);
     }
 
     @AfterEach

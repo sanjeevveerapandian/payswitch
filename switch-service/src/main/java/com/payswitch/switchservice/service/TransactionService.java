@@ -1,12 +1,14 @@
 package com.payswitch.switchservice.service;
 
 import com.payswitch.common.PaymentLimits;
+import com.payswitch.observability.TxnMdc;
 import com.payswitch.switchservice.db.TransactionRepository;
 import com.payswitch.switchservice.db.TxnEventRepository;
 import com.payswitch.switchservice.domain.Txn;
 import com.payswitch.switchservice.domain.TxnEvent;
 import com.payswitch.switchservice.domain.TxnState;
 import com.payswitch.switchservice.domain.TxnStateMachine;
+import com.payswitch.switchservice.metrics.SwitchMetrics;
 import com.payswitch.switchservice.routing.BankRoute;
 import com.payswitch.switchservice.routing.BankRouter;
 import com.payswitch.switchservice.routing.Vpa;
@@ -16,6 +18,8 @@ import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -29,17 +33,22 @@ import org.springframework.transaction.annotation.Transactional;
 @Service
 public class TransactionService {
 
+    private static final Logger log = LoggerFactory.getLogger(TransactionService.class);
+
     public static final String REASON_CREATED = "CREATED";
     public static final String REASON_UNKNOWN_HANDLE = "UNKNOWN_HANDLE";
 
     private final TransactionRepository txns;
     private final TxnEventRepository events;
     private final BankRouter router;
+    private final SwitchMetrics metrics;
 
-    public TransactionService(TransactionRepository txns, TxnEventRepository events, BankRouter router) {
+    public TransactionService(TransactionRepository txns, TxnEventRepository events, BankRouter router,
+                              SwitchMetrics metrics) {
         this.txns = txns;
         this.events = events;
         this.router = router;
+        this.metrics = metrics;
     }
 
     /**
@@ -76,6 +85,9 @@ public class TransactionService {
             throw new DuplicateTransactionException(txnId);
         }
         events.insert(txnId, null, TxnState.INITIATED, REASON_CREATED);
+        TxnMdc.state(txnId, TxnState.INITIATED.name());
+        log.info("Txn {}: created, {} -> {}", txnId, payerBank.map(BankRoute::code).orElse("?"),
+                payeeBank.map(BankRoute::code).orElse("?"));
 
         if (payerBank.isEmpty() || payeeBank.isEmpty()) {
             return transition(txnId, TxnState.FAILED, REASON_UNKNOWN_HANDLE);
@@ -192,6 +204,14 @@ public class TransactionService {
 
         // 3. Record what happened. Same DB transaction as step 2.
         events.insert(current.txnId(), current.state(), newState, reason);
+
+        // 4. Observability: the log line carries txnId and the NEW state; a final state is counted
+        //    once the transaction has committed.
+        TxnMdc.state(current.txnId(), newState.name());
+        log.info("Txn {}: {} -> {} ({})", current.txnId(), current.state(), newState, reason);
+        if (TxnStateMachine.isTerminal(newState)) {
+            metrics.paymentFinished(newState);
+        }
         return get(current.txnId());
     }
 }

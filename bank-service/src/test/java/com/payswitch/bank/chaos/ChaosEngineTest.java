@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
+import com.payswitch.bank.metrics.BankMetrics;
 import com.payswitch.common.bank.BankResponse;
 import com.payswitch.common.bank.BankResult;
 import com.payswitch.common.bank.DeclineReason;
@@ -53,7 +54,7 @@ class ChaosEngineTest {
     @Test
     void sameSeedGivesTheSameDecisions() {
         ChaosSettings seeded = new ChaosSettings(0.3, 0.3, 0, 0.2, 42L);
-        ChaosEngine engine = new ChaosEngine(Duration.ZERO);
+        ChaosEngine engine = new ChaosEngine(Duration.ZERO, BankMetrics.inMemory());
 
         engine.configure(seeded);
         List<String> first = runCalls(engine, 50);
@@ -68,7 +69,7 @@ class ChaosEngineTest {
 
     @Test
     void declineAndErrorNeverRunTheOperation() {
-        ChaosEngine engine = new ChaosEngine(Duration.ZERO);
+        ChaosEngine engine = new ChaosEngine(Duration.ZERO, BankMetrics.inMemory());
         AtomicInteger ran = new AtomicInteger();
 
         engine.configure(new ChaosSettings(1, 0, 0, 0, null));
@@ -89,7 +90,7 @@ class ChaosEngineTest {
 
     @Test
     void dropResponseRunsTheOperationThenWaitsBeforeAnswering() {
-        ChaosEngine engine = new ChaosEngine(Duration.ofMillis(300));
+        ChaosEngine engine = new ChaosEngine(Duration.ofMillis(300), BankMetrics.inMemory());
         engine.configure(new ChaosSettings(0, 0, 0, 1, null));
         BankResponse real = BankResponse.success("T1", OpType.DEBIT);
         AtomicInteger ran = new AtomicInteger();
@@ -135,8 +136,8 @@ class ChaosEngineTest {
     /** The random delay must not use the seeded dice: the same seed still gives the same decisions. */
     @Test
     void randomDelayDoesNotChangeSeededDecisions() {
-        ChaosEngine plain = new ChaosEngine(Duration.ZERO);
-        ChaosEngine jittery = new ChaosEngine(Duration.ZERO);
+        ChaosEngine plain = new ChaosEngine(Duration.ZERO, BankMetrics.inMemory());
+        ChaosEngine jittery = new ChaosEngine(Duration.ZERO, BankMetrics.inMemory());
         plain.configure(new ChaosSettings(0.3, 0.3, 0, 0.2, 42L, 0, 0));
         jittery.configure(new ChaosSettings(0.3, 0.3, 0, 0.2, 42L, 0, 2));
         assertEquals(runCalls(plain, 50), runCalls(jittery, 50));

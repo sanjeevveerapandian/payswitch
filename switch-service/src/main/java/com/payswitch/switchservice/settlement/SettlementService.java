@@ -1,6 +1,7 @@
 package com.payswitch.switchservice.settlement;
 
 import com.payswitch.common.settlement.SettlementAdvice;
+import com.payswitch.switchservice.metrics.SwitchMetrics;
 import com.payswitch.switchservice.routing.BankRoute;
 import com.payswitch.switchservice.routing.BankRouter;
 import java.util.List;
@@ -9,6 +10,9 @@ import java.util.TreeMap;
 import java.util.TreeSet;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
+import org.springframework.boot.context.event.ApplicationReadyEvent;
+import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionTemplate;
 
@@ -41,9 +45,12 @@ public class SettlementService {
     private final SettlementAdviceClient advice;
     private final BankRouter router;
     private final TransactionTemplate tx;
+    private final SwitchMetrics metrics;
 
     public SettlementService(SettlementRepository repo, NetPositionCalculator calculator, CentralLedger central,
-                             SettlementAdviceClient advice, BankRouter router, TransactionTemplate tx) {
+                             SettlementAdviceClient advice, BankRouter router, TransactionTemplate tx,
+                             SwitchMetrics metrics) {
+        this.metrics = metrics;
         this.repo = repo;
         this.calculator = calculator;
         this.central = central;
@@ -103,6 +110,13 @@ public class SettlementService {
      * @throws IllegalStateException for a cycle that is still OPEN, or FAILED (never settled)
      */
     public SettlementReport settle(long cycleId) {
+        // Settlement works on a whole cycle, not one payment: its log lines carry the cycleId instead.
+        try (MDC.MDCCloseable mdc = MDC.putCloseable("cycleId", Long.toString(cycleId))) {
+            return settleInScope(cycleId);
+        }
+    }
+
+    private SettlementReport settleInScope(long cycleId) {
         String status = tx.execute(s -> {
             SettlementRepository.Cycle cycle = repo.lockCycle(cycleId)
                     .orElseThrow(() -> new SettlementCycleNotFoundException(cycleId));
@@ -137,10 +151,21 @@ public class SettlementService {
         }
         if (allConfirmed && repo.markSettled(cycleId)) {
             log.info("Settlement cycle {} SETTLED", cycleId);
+            repo.positions(cycleId).forEach(p -> metrics.settlementNet(p.bankCode(), p.netAmount()));
         } else if (!allConfirmed) {
             log.warn("Settlement cycle {}: not every bank confirmed; it stays CLOSED and is retried.", cycleId);
         }
         return report(cycleId);
+    }
+
+    /**
+     * Gauges live in memory, so after a restart the "last settlement" gauge would be empty until the
+     * next cycle settles. Read it back from the database once at startup instead.
+     */
+    @EventListener(ApplicationReadyEvent.class)
+    public void publishLastSettledPositions() {
+        repo.lastSettledCycle().ifPresent(id ->
+                repo.positions(id).forEach(p -> metrics.settlementNet(p.bankCode(), p.netAmount())));
     }
 
     /** Retries every cycle that is CLOSED but not yet SETTLED (e.g. a bank was down). */

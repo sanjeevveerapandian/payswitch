@@ -5,6 +5,8 @@
 #                                    -> bank-c :8084
 #                       all of them use -> postgres (databases: switch, banka, bankb, bankc)
 #
+#   prometheus :9090 scrapes all five services; grafana :3000 shows the PaySwitch dashboard.
+#
 # Inside this Compose network, services reach each other BY SERVICE NAME:
 # the switch calls http://bank-a:8081, not localhost.
 
@@ -133,3 +135,33 @@ services:
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:8080/actuator/health || exit 1"]
       <<: *health-timing
+
+  # ---- Phase 11: monitoring ------------------------------------------------------------------
+  # Prometheus scrapes /actuator/prometheus on every service every 5 s and checks the alert rules.
+  #   http://localhost:9090          (alerts: http://localhost:9090/alerts)
+  prometheus:
+    image: prom/prometheus:v3.1.0
+    volumes:
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
+    ports:
+      - "9090:9090"
+    depends_on:
+      - psp
+
+  # Grafana with the datasource and the dashboard provisioned from files: nothing to click.
+  #   http://localhost:3000  ->  Dashboards -> PaySwitch -> PaySwitch   (login admin / admin)
+  grafana:
+    image: grafana/grafana:11.4.0
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_AUTH_ANONYMOUS_ENABLED: "true"        # look without logging in (read-only); fine for a local simulator
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/payswitch.json
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus

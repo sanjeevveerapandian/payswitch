@@ -1,0 +1,11 @@
+# Grafana loads every dashboard JSON file in this folder at startup (and re-reads it every 30 s).
+# The dashboard lives in git as code, not in Grafana's database.
+apiVersion: 1
+providers:
+  - name: payswitch
+    folder: PaySwitch
+    type: file
+    allowUiUpdates: false
+    updateIntervalSeconds: 30
+    options:
+      path: /var/lib/grafana/dashboards

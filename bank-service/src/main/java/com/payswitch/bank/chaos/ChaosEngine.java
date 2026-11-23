@@ -1,5 +1,6 @@
 package com.payswitch.bank.chaos;
 
+import com.payswitch.bank.metrics.BankMetrics;
 import com.payswitch.common.bank.BankResponse;
 import com.payswitch.common.bank.DeclineReason;
 import com.payswitch.common.bank.OpType;
@@ -26,14 +27,16 @@ public class ChaosEngine {
 
     /** How long a dropped response stays silent. Must be longer than the switch's read timeout. */
     private final Duration dropResponseSleep;
+    private final BankMetrics metrics;
 
     private ChaosSettings settings = ChaosSettings.NONE;
     private Random dice = new Random();
     /** Separate dice for /status-check, so status checks never change what the main dice say. */
     private Random statusDice = new Random();
 
-    public ChaosEngine(@Value("${bank.chaos.drop-response-sleep:8s}") Duration dropResponseSleep) {
+    public ChaosEngine(@Value("${bank.chaos.drop-response-sleep:8s}") Duration dropResponseSleep, BankMetrics metrics) {
         this.dropResponseSleep = dropResponseSleep;
+        this.metrics = metrics;
     }
 
     public synchronized ChaosSettings settings() {
@@ -59,6 +62,7 @@ public class ChaosEngine {
             fail = statusDice.nextDouble() < settings.statusErrorRate();
         }
         if (fail) {
+            metrics.chaosInjected("status_error");
             log.warn("CHAOS STATUS-CHECK {}: answering HTTP 500, nothing looked up", txnId);
             throw new ChaosFailureException("STATUS-CHECK " + txnId);
         }
@@ -100,20 +104,24 @@ public class ChaosEngine {
 
         long delay = delayFor(s);
         if (delay > 0) {
+            metrics.chaosInjected("delay");
             sleep(Duration.ofMillis(delay));
         }
 
         switch (decision) {
             case DECLINE -> {
+                metrics.chaosInjected("decline");
                 log.warn("CHAOS {} {}: answering DECLINED, nothing processed", op, txnId);
                 return BankResponse.declined(txnId, op, DeclineReason.SIMULATED_DECLINE,
                         "Simulated decline (chaos)");
             }
             case ERROR -> {
+                metrics.chaosInjected("error");
                 log.warn("CHAOS {} {}: answering HTTP 500, nothing processed", op, txnId);
                 throw new ChaosFailureException(op + " " + txnId);
             }
             case DROP_RESPONSE -> {
+                metrics.chaosInjected("drop_response");
                 BankResponse response = operation.get();
                 // operation.get() went through a @Transactional proxy. A Spring proxy commits
                 // BEFORE it returns to its caller, and if the commit fails it throws instead of

@@ -55,6 +55,13 @@ public class SettlementRepository {
                 .param("id", id).query(SettlementRepository::cycle).optional();
     }
 
+    /** The most recently settled cycle, if any (for the "last settlement" gauge after a restart). */
+    public Optional<Long> lastSettledCycle() {
+        return jdbc.sql("SELECT id FROM settlement_cycles WHERE status = 'SETTLED' ORDER BY id DESC LIMIT 1")
+                .query(Long.class)
+                .optional();
+    }
+
     public List<Long> closedCycles() {
         return jdbc.sql("SELECT id FROM settlement_cycles WHERE status = 'CLOSED' ORDER BY id")
                 .query(Long.class).list();

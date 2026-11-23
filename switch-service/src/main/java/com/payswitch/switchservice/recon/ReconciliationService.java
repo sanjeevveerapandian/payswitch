@@ -3,9 +3,11 @@ package com.payswitch.switchservice.recon;
 import com.payswitch.common.bank.OpType;
 import com.payswitch.common.bank.ReconEntry;
 import com.payswitch.common.bank.ReconStatus;
+import com.payswitch.observability.TxnMdc;
 import com.payswitch.switchservice.domain.Txn;
 import com.payswitch.switchservice.domain.TxnState;
 import com.payswitch.switchservice.domain.TxnStateMachine;
+import com.payswitch.switchservice.metrics.SwitchMetrics;
 import com.payswitch.switchservice.routing.BankRoute;
 import com.payswitch.switchservice.routing.BankRouter;
 import com.payswitch.switchservice.service.ConcurrentTransitionException;
@@ -49,9 +51,11 @@ public class ReconciliationService {
     private final BankRouter router;
     private final BankReconClient bankRecon;
     private final ReconProperties props;
+    private final SwitchMetrics metrics;
 
     public ReconciliationService(ReconRepository repo, TransactionService txns, PaymentFlow flow, BankRouter router,
-                                 BankReconClient bankRecon, ReconProperties props) {
+                                 BankReconClient bankRecon, ReconProperties props, SwitchMetrics metrics) {
+        this.metrics = metrics;
         this.repo = repo;
         this.txns = txns;
         this.flow = flow;
@@ -95,14 +99,19 @@ public class ReconciliationService {
 
         // 2. Finish what a crashed run of this window started.
         for (String txnId : repo.deemedInProgress(runId)) {
-            finishDeemed(runId, txnId, banks);
+            try (TxnMdc.Scope mdc = TxnMdc.txn(txnId)) {
+                finishDeemed(runId, txnId, banks);
+            }
         }
 
         // 3. Every switch payment in the window that is old enough and has no line yet.
         Set<String> done = repo.itemTxnIds(runId);
         for (Txn txn : txns.createdBetween(from, to, youngest)) {
             if (!done.contains(txn.txnId())) {
-                reconcile(runId, txn, banks);
+                try (TxnMdc.Scope mdc = TxnMdc.txn(txn.txnId())) {
+                    TxnMdc.state(txn.txnId(), txn.state().name());
+                    reconcile(runId, txn, banks);
+                }
             }
         }
 
@@ -151,7 +160,9 @@ public class ReconciliationService {
         ReconMatcher.Verdict verdict = ReconMatcher.compare(txn.state(), txn.amount(),
                 txn.payerBank(), payer, txn.payeeBank(), payee);
         String action = verdict.category() == ReconCategory.MATCHED ? "NONE" : "NONE: manual review";
-        repo.insertItem(runId, id, verdict.category(), txn.state().name(), verdict.bankView(), action);
+        if (repo.insertItem(runId, id, verdict.category(), txn.state().name(), verdict.bankView(), action)) {
+            metrics.reconItem(verdict.category());
+        }
         if (verdict.category().isException()) {
             log.warn("RECON {} txn {} ({}): {}", verdict.category(), id, txn.state(), verdict.bankView());
         }
@@ -179,6 +190,7 @@ public class ReconciliationService {
             } else if (credited != 0) {
                 repo.finishItem(runId, txnId, ReconCategory.AMOUNT_MISMATCH, txn.state().name(),
                         "NONE: manual review (credited " + credited + ", expected " + txn.amount() + ")", false);
+                metrics.reconItem(ReconCategory.AMOUNT_MISMATCH);
                 return;
             } else {
                 // Status check WITH fence first, then (only if fenced) reverse. PaymentFlow does exactly that.
@@ -190,9 +202,11 @@ public class ReconciliationService {
         if (TxnStateMachine.isTerminal(after.state())) {
             repo.finishItem(runId, txnId, ReconCategory.RESOLVED_DEEMED, after.state().name(),
                     "MOVED_TO_" + after.state(), true);
+            metrics.reconItem(ReconCategory.RESOLVED_DEEMED);
         } else {
             repo.finishItem(runId, txnId, ReconCategory.DEEMED_UNRESOLVED, after.state().name(),
                     "NONE: payee bank still not answering; manual review", false);
+            metrics.reconItem(ReconCategory.DEEMED_UNRESOLVED);
             log.warn("RECON txn {} still {} after recon: payee bank not answering.", txnId, after.state());
         }
     }
@@ -220,9 +234,13 @@ public class ReconciliationService {
                     view.append(view.isEmpty() ? "" : " | ").append(ReconMatcher.describe(bank, entries));
                 }
             });
-            repo.insertItem(runId, txnId, ReconCategory.BANK_ONLY, null, view.toString(),
-                    "NONE: manual review (no switch txn)");
-            log.warn("RECON BANK_ONLY txn {}: {}", txnId, view);
+            try (TxnMdc.Scope mdc = TxnMdc.txn(txnId)) {
+                if (repo.insertItem(runId, txnId, ReconCategory.BANK_ONLY, null, view.toString(),
+                        "NONE: manual review (no switch txn)")) {
+                    metrics.reconItem(ReconCategory.BANK_ONLY);
+                }
+                log.warn("RECON BANK_ONLY txn {}: {}", txnId, view);
+            }
         }
     }
 }
