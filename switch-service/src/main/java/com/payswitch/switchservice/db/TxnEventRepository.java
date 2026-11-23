@@ -3,6 +3,7 @@ package com.payswitch.switchservice.db;
 import com.payswitch.switchservice.domain.TxnEvent;
 import com.payswitch.switchservice.domain.TxnState;
 import java.time.OffsetDateTime;
+import java.util.Collection;
 import java.util.List;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Repository;
@@ -28,6 +29,29 @@ public class TxnEventRepository {
                 .param("to", to.name())
                 .param("reason", reason)
                 .update();
+    }
+
+    /** Every event of these payments, oldest first (for the live monitor's snapshot). */
+    public List<TxnEvent> findByTxnIds(Collection<String> txnIds) {
+        if (txnIds.isEmpty()) {
+            return List.of();
+        }
+        return jdbc.sql("""
+                SELECT txn_id, from_state, to_state, reason, created_at
+                FROM txn_events WHERE txn_id IN (:ids) ORDER BY id
+                """)
+                .param("ids", txnIds)
+                .query(TxnEventRepository::map)
+                .list();
+    }
+
+    private static TxnEvent map(java.sql.ResultSet rs, int n) throws java.sql.SQLException {
+        return new TxnEvent(
+                rs.getString("txn_id"),
+                rs.getString("from_state") == null ? null : TxnState.valueOf(rs.getString("from_state")),
+                TxnState.valueOf(rs.getString("to_state")),
+                rs.getString("reason"),
+                rs.getObject("created_at", OffsetDateTime.class).toInstant());
     }
 
     /** Every event of one payment, oldest first. */

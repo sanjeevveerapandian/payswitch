@@ -1,6 +1,9 @@
 # Phase 10: settings for the big load test, layered ON TOP of docker-compose.yml:
 #
-#   docker compose -f docker-compose.yml -f docker-compose.loadtest.yml up --build -d
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml -f docker-compose.loadtest.yml up --build -d
+#
+# (docker-compose.dev.yml publishes the services' own ports: the load generator and the money
+#  auditor talk to the PSP, the switch, the banks and Postgres directly, not through the gateway.)
 #
 # Banks: the "loadtest" profile adds 300 customers per bank (cust001..cust300@banka/bankb/bankc).
 # Switch: the timers are made faster so the auditor does not wait 5 minutes for recon's cutoff,

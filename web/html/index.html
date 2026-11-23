@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PaySwitch demo</title>
+  <meta name="description" content="A UPI-style payment switch simulator: live payments, failure scenarios and the money that never changes.">
+  <link rel="stylesheet" href="app.css">
+</head>
+<body>
+<header class="top">
+  <div class="brand">
+    <span class="logo" aria-hidden="true">PS</span>
+    <div>
+      <h1>PaySwitch</h1>
+      <p class="sub">Payment switch simulator. No real money, no real banks.</p>
+    </div>
+  </div>
+
+  <section class="money" aria-labelledby="total-label">
+    <p id="total-label" class="money-label">Total money in the system</p>
+    <p id="total" class="total" aria-live="polite">loading...</p>
+    <p class="money-parts">
+      <span>Customers <strong id="customers">-</strong></span>
+      <span>In transit <strong id="in-transit">-</strong></span>
+    </p>
+    <p id="total-alarm" class="total-alarm" role="alert" hidden></p>
+  </section>
+</header>
+
+<main class="layout">
+  <div class="col">
+
+    <section class="card pay" aria-labelledby="pay-h">
+      <h2 id="pay-h">Make a payment</h2>
+      <form id="pay-form" class="pay-form">
+        <label>From
+          <select id="payer" name="payer" required></select>
+        </label>
+        <label>To
+          <select id="payee" name="payee" required></select>
+        </label>
+        <label>Amount (Rs)
+          <input id="amount" name="amount" inputmode="decimal" autocomplete="off" required
+                 pattern="[0-9]{1,6}(\.[0-9]{1,2})?" value="200.00" aria-describedby="amount-hint">
+        </label>
+        <button type="submit" class="primary">Pay</button>
+      </form>
+      <p id="amount-hint" class="hint">Up to Rs 1,00,000, at most two decimals.</p>
+      <div id="pay-result" class="result" aria-live="polite"></div>
+    </section>
+
+    <section class="card" aria-labelledby="scen-h">
+      <h2 id="scen-h">Scenarios</h2>
+      <p class="hint">Each button sets up one failure and makes one real payment through the normal code.</p>
+      <ul id="scenarios" class="scenarios"></ul>
+      <div id="scenario-result" class="result" aria-live="polite"></div>
+    </section>
+
+    <section class="card" aria-labelledby="chaos-h">
+      <div class="card-head">
+        <h2 id="chaos-h">Chaos</h2>
+        <button type="button" id="chaos-reset" class="secondary">Reset all chaos</button>
+      </div>
+      <p class="hint">Make each bank unreliable on purpose. Applies to every payment until reset.</p>
+      <div id="chaos" class="chaos"></div>
+    </section>
+
+    <section class="card" aria-labelledby="load-h">
+      <h2 id="load-h">Load</h2>
+      <div class="row">
+        <button type="button" id="load-start" class="primary">Run 1,000 payments</button>
+        <span id="load-progress-text" class="hint" aria-live="polite"></span>
+      </div>
+      <progress id="load-progress" max="1000" value="0" aria-label="Load progress"></progress>
+      <div id="load-counts" class="chips"></div>
+    </section>
+
+    <section class="card" aria-labelledby="admin-h">
+      <h2 id="admin-h">Admin</h2>
+      <div class="row">
+        <button type="button" id="recon-run" class="secondary">Run recon</button>
+        <button type="button" id="settle" class="secondary">Close settlement</button>
+      </div>
+      <div id="admin-result" class="result" aria-live="polite"></div>
+      <h3>Last settlement</h3>
+      <div id="settlement"></div>
+      <h3>Per bank</h3>
+      <div id="banks"></div>
+      <h3>Payments by state</h3>
+      <div id="states" class="chips"></div>
+    </section>
+  </div>
+
+  <div class="col">
+    <section class="card monitor" aria-labelledby="mon-h">
+      <div class="card-head">
+        <h2 id="mon-h">Live monitor</h2>
+        <span id="conn" class="conn conn-off">connecting...</span>
+      </div>
+      <p class="hint">The latest 50 payments. States change live. Select a row for its full history.</p>
+      <p id="mon-status" class="visually-hidden" aria-live="polite"></p>
+      <ol id="txns" class="txns"></ol>
+    </section>
+  </div>
+</main>
+
+<footer class="foot">
+  <p>PaySwitch is a learning project. Not affiliated with NPCI, UPI or any bank.
+     <a href="/grafana/">Grafana dashboard</a></p>
+</footer>
+
+<dialog id="details" aria-labelledby="details-h">
+  <form method="dialog" class="dialog-head">
+    <h2 id="details-h">Payment</h2>
+    <button class="secondary" aria-label="Close">Close</button>
+  </form>
+  <div id="details-body"></div>
+</dialog>
+
+<script src="app.js"></script>
+</body>
+</html>

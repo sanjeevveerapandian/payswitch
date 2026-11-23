@@ -143,6 +143,24 @@ class ResolutionTest extends ResolutionIntegrationTest {
         verify(banks, never()).reverse(any(), any());
     }
 
+    /**
+     * Found by the Phase 12 demo: a payment that had JUST become DEEMED_APPROVED went straight into a
+     * second round of status checks, against the bank that had just failed every one of them. A deemed
+     * payment must wait switch.resolution.deemed-recheck-after before it is asked about again.
+     */
+    @Test
+    void aPaymentJustDeemedApprovedIsNotRecheckedStraightAway() {
+        ReqPay req = raviPaysAnu200();
+        when(banks.debit(any(), any())).thenReturn(OK);
+        when(banks.credit(any(), any())).thenReturn(LOST);
+        when(banks.statusCheckAndFence(any(), any(), eq(OpType.CREDIT))).thenReturn(BankCallResult.unknown("HTTP 500"));
+
+        orchestrator.pay(req);
+
+        assertEquals(DEEMED_APPROVED, service.get(req.txnId()).state());
+        verify(banks, times(3)).statusCheckAndFence(any(), eq(req.txnId()), eq(OpType.CREDIT));  // ONE round
+    }
+
     // ---- reversal -----------------------------------------------------------------------
 
     @Test

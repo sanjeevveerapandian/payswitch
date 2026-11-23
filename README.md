@@ -12,7 +12,9 @@ Java 21, Spring Boot 3, PostgreSQL, Docker Compose.
 
 ```mermaid
 flowchart LR
-    U([Payer's app]) -->|POST /pay<br/>rupees as text| PSP[PSP<br/>:8080]
+    U([Browser / payer's app]) -->|:8000| WEB[web: nginx<br/>UI + gateway]
+    WEB -->|/api/psp: POST /pay<br/>rupees as text| PSP[PSP<br/>:8080]
+    WEB -.->|/api/switch: live events,<br/>admin, scenarios| SW
     PSP -->|ReqPay<br/>paise| SW[Switch<br/>:8083]
     SW -->|debit / reverse<br/>status-check| A[Bank A<br/>:8081]
     SW -->|credit<br/>status-check| B[Bank B<br/>:8082]
@@ -31,6 +33,7 @@ flowchart LR
 
 | Service | Job |
 |---|---|
+| **web** | nginx: serves the demo UI and is the only published port; forwards `/api/...` to each service. |
 | **PSP** | The payer's app backend. Validates the request, turns rupees into paise (the only place that happens), makes a txnId. |
 | **Switch** | Finds each bank from the VPA handle (`@banka`, `@bankb`, `@bankc`), runs the payment as a state machine, resolves every unclear bank answer, reconciles with the banks and settles cycles. |
 | **Bank A / B / C** | The same app run three times. A double-entry ledger with idempotent debit, credit and reverse. |
@@ -86,10 +89,14 @@ You only need Docker.
 docker compose up --build -d
 ```
 
+Then open **http://localhost:8000**: the demo UI (below). Everything goes through that one port;
+`docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d` also publishes each
+service's own port (8080 PSP, 8081-8084 banks and switch, 5433 Postgres) for debugging.
+
 Ravi (Bank A, starts with Rs 5,000) pays Rs 200 to Anu's shop (Bank B, starts with Rs 1,000):
 
 ```bash
-curl -X POST http://localhost:8080/pay -H "Content-Type: application/json" \
+curl -X POST http://localhost:8000/api/psp/pay -H "Content-Type: application/json" \
   -d '{"payerVpa":"ravi@banka","payeeVpa":"anu@bankb","amount":"200.00"}'
 ```
 
@@ -100,16 +107,16 @@ curl -X POST http://localhost:8080/pay -H "Content-Type: application/json" \
 On Windows PowerShell, use `curl.exe --%` with the JSON quotes escaped:
 
 ```powershell
-curl.exe --% -X POST http://localhost:8080/pay -H "Content-Type: application/json" -d "{\"payerVpa\":\"ravi@banka\",\"payeeVpa\":\"anu@bankb\",\"amount\":\"200.00\"}"
+curl.exe --% -X POST http://localhost:8000/api/psp/pay -H "Content-Type: application/json" -d "{\"payerVpa\":\"ravi@banka\",\"payeeVpa\":\"anu@bankb\",\"amount\":\"200.00\"}"
 ```
 
 Look around (balances are in paise):
 
 ```bash
-curl http://localhost:8080/pay/TXN3F2A...              # the payment's status
-curl http://localhost:8083/txns/TXN3F2A...             # every step, with the reason for each
-curl http://localhost:8081/accounts/ravi@banka/balance # 480000
-curl http://localhost:8082/accounts/anu@bankb/balance  # 120000
+curl http://localhost:8000/api/psp/pay/TXN3F2A...                     # the payment's status
+curl http://localhost:8000/api/switch/txns/TXN3F2A...                # every step, with the reason for each
+curl http://localhost:8000/api/banka/accounts/ravi@banka/balance    # 480000
+curl http://localhost:8000/api/bankb/accounts/anu@bankb/balance     # 120000
 ```
 
 Bank C (port 8084) has Kumar (`kumar@bankc`, Rs 4,000) and Priya (`priya@bankc`, Rs 2,500).
@@ -135,10 +142,10 @@ Example: Bank A does every debit but never replies. The payment still ends in `S
 5 seconds later: the switch times out, asks Bank A what happened, finds the debit, and carries on.
 
 ```bash
-curl -X POST http://localhost:8081/admin/chaos -H "Content-Type: application/json" -d '{"dropResponseRate":1.0}'
-curl -X POST http://localhost:8080/pay -H "Content-Type: application/json" \
+curl -X POST http://localhost:8000/api/banka/admin/chaos -H "Content-Type: application/json" -d '{"dropResponseRate":1.0}'
+curl -X POST http://localhost:8000/api/psp/pay -H "Content-Type: application/json" \
   -d '{"payerVpa":"ravi@banka","payeeVpa":"anu@bankb","amount":"200.00"}'
-curl -X POST http://localhost:8081/admin/chaos -H "Content-Type: application/json" -d '{}'   # chaos off
+curl -X POST http://localhost:8000/api/banka/admin/chaos -H "Content-Type: application/json" -d '{}'   # chaos off
 ```
 
 ## Settlement: who pays whom at the end of the day
@@ -161,9 +168,9 @@ Only payments that are SUCCESS **and** confirmed by reconciliation join a cycle.
 payments and reconciliation exceptions wait for a later cycle.
 
 ```bash
-curl -X POST http://localhost:8083/admin/settlement/close        # close + settle the open cycle
-curl http://localhost:8083/admin/settlement/cycles/1             # items, net positions, gross vs net
-curl http://localhost:8083/admin/settlement/central/reserves     # each bank at the central bank
+curl -X POST http://localhost:8000/api/switch/admin/settlement/close        # close + settle the open cycle
+curl http://localhost:8000/api/switch/admin/settlement/cycles/1             # items, net positions, gross vs net
+curl http://localhost:8000/api/switch/admin/settlement/central/reserves     # each bank at the central bank
 ```
 
 Settling posts one journal entry in the central bank's ledger (same `ledger-core` rules), then
@@ -178,7 +185,7 @@ databases directly and checks, to the paisa, that nothing was lost. Results: [RE
 ```bash
 mvn -pl load-generator -am install -DskipTests          # builds load-generator/target/*-all.jar
 docker compose down -v
-docker compose -f docker-compose.yml -f docker-compose.loadtest.yml up --build -d
+docker compose -f docker-compose.yml -f docker-compose.dev.yml -f docker-compose.loadtest.yml up --build -d
 java -jar load-generator/target/load-generator-0.1.0-SNAPSHOT-all.jar --count 100000 --concurrency 50      --seed 42 --chaos on --crash-switch-at 50
 ```
 
@@ -208,9 +215,9 @@ A 5,000 payment version runs automatically in `mvn verify` (`LoadChaosIT`), not 
 
 | What | Where |
 |---|---|
-| Grafana dashboard (rows: Overview, Latency, Health, Banks, Money) | http://localhost:3000 (opens on it; admin / admin to edit) |
-| Prometheus, and the three alert rules | http://localhost:9090, http://localhost:9090/alerts |
-| One service's raw metrics | http://localhost:8083/actuator/prometheus (8080, 8081, 8082, 8084 for the others) |
+| Grafana dashboard (rows: Overview, Latency, Health, Banks, Money) | http://localhost:8000/grafana/ (admin / admin to edit) |
+| Prometheus, and the three alert rules | http://localhost:9090/alerts (with the dev override from "Run it") |
+| One service's raw metrics | http://localhost:8000/api/switch/actuator/prometheus (also `/api/psp`, `/api/banka`...) |
 
 The metrics. Labels only ever take a few fixed values: never a txnId, VPA or amount.
 
@@ -253,6 +260,30 @@ scripts/trace.sh TXN3F2A...          # add --raw for the JSON lines
 03:13:03.4536269  psp-service             INFO                    Txn TXNF607...: switch answered REVERSED (REVERSAL_OK)
 ```
 
+## The demo UI
+
+http://localhost:8000, one plain HTML/CSS/JS page (`web/html`), served by an nginx gateway (`web/nginx.conf`)
+that is also the only way in: `/api/psp`, `/api/switch`, `/api/banka|bankb|bankc`, `/grafana`.
+
+| Section | What it shows |
+|---|---|
+| TOTAL MONEY | customer money + money in transit, from `GET /api/switch/admin/money-summary` every second. It must never change; if it does, it flashes red. |
+| Make a payment | a payment between the six seeded customers, through the PSP |
+| Live monitor | the latest 50 payments; each state change appears live (Server-Sent Events, `GET /api/switch/events/txns`). Select a row for its full history. |
+| Scenarios | happy, insufficient funds, debit reply lost, credit unknown (DEEMED_APPROVED, then recon), switch crash (the switch really dies; Docker restarts it) |
+| Chaos | per-bank sliders for declines, HTTP 500s, dropped replies, failing status checks and delay |
+| Load | 1,000 random payments in the background, with live counters |
+| Admin | run recon, close settlement, the last settlement's net positions, money per bank, payments per state |
+
+The demo stack uses quicker switch timings than the defaults (recon cutoff 10 s, stuck payments
+picked up after 10 s) so scenarios finish while you watch; see `docker-compose.yml`.
+
+Check the gateway end to end (UI, every API route, the live stream):
+
+```bash
+scripts/smoke-gateway.sh
+```
+
 ## Design decisions
 
 | Decision | Why |
@@ -275,6 +306,9 @@ scripts/trace.sh TXN3F2A...          # add --raw for the JSON lines
 | Metric labels are fixed small sets (state, bank, op), never a txnId | Every label combination is a separate time series; one per payment would sink Prometheus. Find one payment in the logs instead. |
 | Counters for final states are bumped only after the database commit | A rolled-back state change must not be counted. |
 | The txnId travels as a header and sits in the MDC, set and cleared by a filter | Every log line about a payment can be found by its id, and a reused thread never logs the previous request's id. |
+| Live events are published AFTER the database commit | A browser must never show a state that later rolls back. |
+| Server-Sent Events, batched every 200 ms | One-way server-to-browser is all the monitor needs; batching keeps 200 payments/s to 5 messages/s per browser. |
+| One gateway (nginx) in front of everything | One origin for the browser (no CORS), one port to expose, internal services stay private. |
 | Multilateral net settlement of reconciled payments only | Far less money moves between banks, and nothing is settled that the banks' own books do not confirm. |
 
 ## Tests

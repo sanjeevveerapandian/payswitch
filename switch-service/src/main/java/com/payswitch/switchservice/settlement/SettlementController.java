@@ -4,6 +4,7 @@ import java.util.Map;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
 import org.springframework.web.bind.annotation.ExceptionHandler;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -40,6 +41,12 @@ public class SettlementController {
     @GetMapping("/admin/settlement/cycles/{id}")
     public SettlementReport cycle(@PathVariable long id) {
         return settlement.report(id);
+    }
+
+    /** The last SETTLED cycle; 404 if nothing has been settled yet. */
+    @GetMapping("/admin/settlement/last")
+    public ResponseEntity<SettlementReport> last() {
+        return ResponseEntity.of(settlement.lastSettled());
     }
 
     @GetMapping("/admin/settlement/central/reserves")

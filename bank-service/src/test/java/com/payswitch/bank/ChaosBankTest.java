@@ -24,6 +24,7 @@ import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.TestPropertySource;
 import org.springframework.web.client.HttpClientErrorException;
+import org.springframework.http.MediaType;
 import org.springframework.web.client.HttpServerErrorException;
 import org.springframework.web.client.RestClientException;
 import org.springframework.web.client.RestClient;
@@ -176,6 +177,53 @@ class ChaosBankTest extends BankIntegrationTest {
             }
         }
         return false;
+    }
+
+    // ---- Phase 12: chaos once -------------------------------------------------------------------
+
+    @Test
+    void chaosOnceFailsTheNextMatchingRequestOnlyThenResetsItself() {
+        String ravi = newCustomer(500_000);
+        caller.post().uri("/admin/chaos/once").contentType(MediaType.APPLICATION_JSON)
+                .body(Map.of("op", "DEBIT", "mode", "error")).retrieve().toBodilessEntity();
+        assertEquals(Map.of("DEBIT", "ERROR"), caller.get().uri("/admin/chaos/once").retrieve().body(Map.class));
+
+        String first = newTxnId();
+        assertThrows(HttpServerErrorException.class, () -> debit(first, ravi, 10_000));   // the armed one
+        BankResponse second = debit(newTxnId(), ravi, 10_000);                            // back to normal
+        BankResponse third = debit(newTxnId(), ravi, 10_000);
+
+        assertEquals(BankResult.SUCCESS, second.result());
+        assertEquals(BankResult.SUCCESS, third.result());
+        assertEquals(TxnStatus.NOT_FOUND, status(first, OpType.DEBIT));   // the failed one moved nothing
+        assertEquals(480_000, balance(ravi));
+        assertEquals(Map.of(), caller.get().uri("/admin/chaos/once").retrieve().body(Map.class));
+    }
+
+    @Test
+    void chaosOnceOnlyTouchesTheOperationItWasArmedFor() {
+        String ravi = newCustomer(500_000);
+        caller.post().uri("/admin/chaos/once").contentType(MediaType.APPLICATION_JSON)
+                .body(Map.of("op", "CREDIT", "mode", "decline")).retrieve().toBodilessEntity();
+
+        assertEquals(BankResult.SUCCESS, debit(newTxnId(), ravi, 10_000).result());   // a DEBIT: untouched
+        assertEquals(Map.of("CREDIT", "DECLINE"), caller.get().uri("/admin/chaos/once").retrieve().body(Map.class));
+    }
+
+    @Test
+    void resettingChaosAlsoForgetsArmedOnes() {
+        caller.post().uri("/admin/chaos/once").contentType(MediaType.APPLICATION_JSON)
+                .body(Map.of("op", "REVERSE", "mode", "drop_response")).retrieve().toBodilessEntity();
+        setChaos(Map.of());
+        assertEquals(Map.of(), caller.get().uri("/admin/chaos/once").retrieve().body(Map.class));
+    }
+
+    @Test
+    void aBadOnceRequestIs400() {
+        HttpClientErrorException e = assertThrows(HttpClientErrorException.class, () ->
+                caller.post().uri("/admin/chaos/once").contentType(MediaType.APPLICATION_JSON)
+                        .body(Map.of("op", "STATUS_CHECK", "mode", "decline")).retrieve().toBodilessEntity());
+        assertEquals(400, e.getStatusCode().value());
     }
 
     private void setChaos(Map<String, Object> settings) {

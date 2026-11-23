@@ -143,6 +143,31 @@ class ChaosEngineTest {
         assertEquals(runCalls(plain, 50), runCalls(jittery, 50));
     }
 
+    /** Phase 12: a one-shot failure overrides one call, and the seeded sequence after it is unchanged. */
+    @Test
+    void aOneShotFailureHitsOneCallAndDoesNotShiftTheSeededSequence() {
+        ChaosEngine plain = new ChaosEngine(Duration.ZERO, BankMetrics.inMemory());
+        ChaosEngine armed = new ChaosEngine(Duration.ZERO, BankMetrics.inMemory());
+        plain.configure(new ChaosSettings(0.3, 0.3, 0, 0, 42L, 0, 0));
+        armed.configure(new ChaosSettings(0.3, 0.3, 0, 0, 42L, 0, 0));
+        armed.armOnce("DEBIT", "error");
+
+        List<String> expected = runCalls(plain, 30);
+        List<String> actual = runCalls(armed, 30);
+
+        assertEquals("ERROR", actual.get(0), "the armed call");
+        assertEquals(expected.subList(1, 30), actual.subList(1, 30), "every later call as if nothing was armed");
+        assertEquals(java.util.Map.of(), armed.pendingOnce());
+    }
+
+    @Test
+    void aOneShotStatusCheckErrorFailsOneStatusCheck() {
+        ChaosEngine engine = new ChaosEngine(Duration.ZERO, BankMetrics.inMemory());
+        engine.armOnce("status_check", "error");
+        assertThrows(ChaosFailureException.class, () -> engine.runStatusCheck("T1", () -> "checked"));
+        assertEquals("checked", engine.runStatusCheck("T2", () -> "checked"));
+    }
+
     /** What chaos did to each of n calls, as text: PROCEED / DECLINE / ERROR / DROP_RESPONSE. */
     private static List<String> runCalls(ChaosEngine engine, int n) {
         List<String> seen = new ArrayList<>();

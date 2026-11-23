@@ -168,6 +168,11 @@ public class SettlementService {
                 repo.positions(id).forEach(p -> metrics.settlementNet(p.bankCode(), p.netAmount())));
     }
 
+    /** The most recently SETTLED cycle, if there is one (for the demo UI's Admin panel). */
+    public java.util.Optional<SettlementReport> lastSettled() {
+        return repo.lastSettledCycle().map(this::report);
+    }
+
     /** Retries every cycle that is CLOSED but not yet SETTLED (e.g. a bank was down). */
     public void settleUnfinished() {
         for (long id : repo.closedCycles()) {

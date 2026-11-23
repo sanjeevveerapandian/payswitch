@@ -194,7 +194,10 @@ final class PaymentSystem implements AutoCloseable {
                 "--switch.recon.bank-clock-slack=1m",
                 "--switch.recon.page-size=" + (loadTest ? 500 : 3),
                 // Settlement: tests close cycles themselves.
-                "--switch.settlement.enabled=false");
+                "--switch.settlement.enabled=false",
+                // Phase 12: POST /admin/scenario/{name}. (The switch-crash scenario would halt THIS JVM,
+                // so no e2e test runs it; DemoCrashRecoveryTest in the switch covers it with a fake halt.)
+                "--switch.demo.enabled=" + database.equals("switch"));
     }
 
     private static List<String> pspArgs(String switchUrl) {

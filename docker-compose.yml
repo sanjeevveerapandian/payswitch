@@ -1,11 +1,17 @@
 # The whole system with one command:   docker compose up --build
+# Then open http://localhost:8000 (the demo UI).
 #
-#   you -> psp :8080 -> switch :8083 -> bank-a :8081
-#                                    -> bank-b :8082
-#                                    -> bank-c :8084
-#                       all of them use -> postgres (databases: switch, banka, bankb, bankc)
+#   you -> web :8000 (nginx: the UI + the only way in)
+#            /api/psp    -> psp :8080 -> switch :8083 -> bank-a :8081
+#            /api/switch -> switch                     -> bank-b :8082
+#            /api/bankX  -> each bank                  -> bank-c :8084
+#            /grafana    -> grafana
+#          all of them use -> postgres (databases: switch, banka, bankb, bankc)
+#          prometheus scrapes all five services; grafana shows the PaySwitch dashboard.
 #
-#   prometheus :9090 scrapes all five services; grafana :3000 shows the PaySwitch dashboard.
+# Only "web" publishes a port. To reach a service directly (debugging, the load generator, the
+# money auditor, an IDE against Postgres) add the dev override, which publishes the old ports:
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
 #
 # Inside this Compose network, services reach each other BY SERVICE NAME:
 # the switch calls http://bank-a:8081, not localhost.
@@ -32,8 +38,6 @@ services:
       # Creates the databases banka, bankb, bankc and switch on first start.
       # (Only on an EMPTY data folder: after adding a database, run "docker compose down -v" once.)
       - ./docker/postgres/init-databases.sql:/docker-entrypoint-initdb.d/init-databases.sql:ro
-    ports:
-      - "5433:5432"          # for running a service from your IDE against this database
     healthcheck:
       # -h localhost: only passes once the real server is up, not during the init script.
       test: ["CMD-SHELL", "pg_isready -h localhost -U payswitch"]
@@ -50,8 +54,6 @@ services:
       SPRING_PROFILES_ACTIVE: chaos
       PORT: 8081
       DB_URL: jdbc:postgresql://postgres:5432/banka
-    ports:
-      - "8081:8081"
     depends_on:
       postgres:
         condition: service_healthy
@@ -67,8 +69,6 @@ services:
       SPRING_PROFILES_ACTIVE: chaos
       PORT: 8082
       DB_URL: jdbc:postgresql://postgres:5432/bankb
-    ports:
-      - "8082:8082"
     depends_on:
       postgres:
         condition: service_healthy
@@ -84,8 +84,6 @@ services:
       SPRING_PROFILES_ACTIVE: chaos
       PORT: 8084
       DB_URL: jdbc:postgresql://postgres:5432/bankc
-    ports:
-      - "8084:8084"
     depends_on:
       postgres:
         condition: service_healthy
@@ -98,14 +96,18 @@ services:
       context: .
       dockerfile: switch-service/Dockerfile
     image: payswitch/switch-service
+    # The switch-crash scenario kills the process on purpose; Docker brings it straight back.
+    restart: unless-stopped
     environment:
       PORT: 8083
       DB_URL: jdbc:postgresql://postgres:5432/switch
+      SWITCH_DEMO_ENABLED: "true"      # POST /admin/scenario/{name} (demo only)
+      SWITCH_RECON_CUTOFF: 10s         # demo: recon may check payments 10 s old (default 5 min)
+      SWITCH_RESOLUTION_STUCK_AFTER: 10s   # demo: a stuck payment is picked up after 10 s (default 30 s)
+      SWITCH_RESOLUTION_INTERVAL: 5s       # demo: the resolver looks every 5 s (default 15 s)
       BANKA_URL: http://bank-a:8081
       BANKB_URL: http://bank-b:8082
       BANKC_URL: http://bank-c:8084
-    ports:
-      - "8083:8083"
     depends_on:
       postgres:
         condition: service_healthy
@@ -127,8 +129,6 @@ services:
     environment:
       PORT: 8080
       SWITCH_URL: http://switch:8083
-    ports:
-      - "8080:8080"
     depends_on:
       switch:
         condition: service_healthy
@@ -138,19 +138,17 @@ services:
 
   # ---- Phase 11: monitoring ------------------------------------------------------------------
   # Prometheus scrapes /actuator/prometheus on every service every 5 s and checks the alert rules.
-  #   http://localhost:9090          (alerts: http://localhost:9090/alerts)
+  #   http://localhost:9090/alerts with the dev override
   prometheus:
     image: prom/prometheus:v3.1.0
     volumes:
       - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - ./monitoring/prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
-    ports:
-      - "9090:9090"
     depends_on:
       - psp
 
   # Grafana with the datasource and the dashboard provisioned from files: nothing to click.
-  #   http://localhost:3000  ->  Dashboards -> PaySwitch -> PaySwitch   (login admin / admin)
+  #   http://localhost:8000/grafana/   (login admin / admin to edit)
   grafana:
     image: grafana/grafana:11.4.0
     environment:
@@ -158,10 +156,29 @@ services:
       GF_AUTH_ANONYMOUS_ENABLED: "true"        # look without logging in (read-only); fine for a local simulator
       GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
       GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/payswitch.json
+      # Served by the gateway under /grafana/, not on its own port.
+      GF_SERVER_ROOT_URL: http://localhost:8000/grafana/
+      GF_SERVER_SERVE_FROM_SUB_PATH: "true"
     volumes:
       - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
       - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
-    ports:
-      - "3000:3000"
     depends_on:
       - prometheus
+
+  # ---- Phase 12: the gateway and demo UI -------------------------------------------------------
+  # nginx serves the UI and forwards /api/... to the services. The ONLY published port.
+  web:
+    image: nginx:1.27-alpine
+    volumes:
+      - ./web/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./web/html:/usr/share/nginx/html:ro
+    ports:
+      - "8000:80"
+    depends_on:
+      psp:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1/ || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 10

@@ -5,6 +5,8 @@ import com.payswitch.common.bank.BankResponse;
 import com.payswitch.common.bank.DeclineReason;
 import com.payswitch.common.bank.OpType;
 import java.time.Duration;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.Random;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.function.Supplier;
@@ -33,6 +35,11 @@ public class ChaosEngine {
     private Random dice = new Random();
     /** Separate dice for /status-check, so status checks never change what the main dice say. */
     private Random statusDice = new Random();
+    /**
+     * One-shot failures for the demo's scenarios: op (DEBIT, CREDIT, REVERSE, STATUS_CHECK) -> what
+     * to do to the NEXT request for that op. Removed the moment it is used.
+     */
+    private final Map<String, ChaosDecision> once = new HashMap<>();
 
     public ChaosEngine(@Value("${bank.chaos.drop-response-sleep:8s}") Duration dropResponseSleep, BankMetrics metrics) {
         this.dropResponseSleep = dropResponseSleep;
@@ -48,7 +55,37 @@ public class ChaosEngine {
         this.settings = newSettings;
         this.dice = newSettings.seed() == null ? new Random() : new Random(newSettings.seed());
         this.statusDice = newSettings.seed() == null ? new Random() : new Random(newSettings.seed() + 1);
+        this.once.clear();                              // "reset all chaos" really resets everything
         log.warn("Chaos settings changed: {}", newSettings);
+    }
+
+    /**
+     * Arms a one-shot failure: the NEXT request for {@code op} gets {@code mode}, then it is gone.
+     *
+     * @param op   DEBIT, CREDIT, REVERSE or STATUS_CHECK
+     * @param mode decline, error or drop_response (STATUS_CHECK: error only)
+     */
+    public synchronized void armOnce(String op, String mode) {
+        ChaosDecision decision = switch (mode == null ? "" : mode.toLowerCase(java.util.Locale.ROOT)) {
+            case "decline" -> ChaosDecision.DECLINE;
+            case "error" -> ChaosDecision.ERROR;
+            case "drop_response" -> ChaosDecision.DROP_RESPONSE;
+            default -> throw new IllegalArgumentException("mode must be decline, error or drop_response");
+        };
+        String key = op == null ? "" : op.toUpperCase(java.util.Locale.ROOT);
+        if (!java.util.Set.of("DEBIT", "CREDIT", "REVERSE", "STATUS_CHECK").contains(key)) {
+            throw new IllegalArgumentException("op must be DEBIT, CREDIT, REVERSE or STATUS_CHECK");
+        }
+        if (key.equals("STATUS_CHECK") && decision != ChaosDecision.ERROR) {
+            throw new IllegalArgumentException("a status check can only be given mode error");
+        }
+        once.put(key, decision);
+        log.warn("Chaos armed ONCE: the next {} gets {}", key, decision);
+    }
+
+    /** The one-shot failures still waiting for their request. */
+    public synchronized Map<String, ChaosDecision> pendingOnce() {
+        return Map.copyOf(once);
     }
 
     /**
@@ -60,6 +97,7 @@ public class ChaosEngine {
         boolean fail;
         synchronized (this) {
             fail = statusDice.nextDouble() < settings.statusErrorRate();
+            fail |= once.remove("STATUS_CHECK") != null;   // the roll still happens: seeds stay repeatable
         }
         if (fail) {
             metrics.chaosInjected("status_error");
@@ -99,7 +137,12 @@ public class ChaosEngine {
         ChaosDecision decision;
         synchronized (this) {
             s = settings;
-            decision = decide(s, dice.nextDouble());
+            decision = decide(s, dice.nextDouble());       // always roll, so a seed stays repeatable
+            ChaosDecision forced = once.remove(op.name());
+            if (forced != null) {
+                decision = forced;
+                log.warn("CHAOS ONCE {} {}: {}", op, txnId, forced);
+            }
         }
 
         long delay = delayFor(s);

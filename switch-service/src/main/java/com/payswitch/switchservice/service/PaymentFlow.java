@@ -12,6 +12,7 @@ import com.payswitch.common.bank.ReverseRequest;
 import com.payswitch.observability.TxnMdc;
 import com.payswitch.switchservice.bank.BankCallResult;
 import com.payswitch.switchservice.bank.BankClient;
+import com.payswitch.switchservice.demo.DemoCrash;
 import com.payswitch.switchservice.domain.Txn;
 import com.payswitch.switchservice.domain.TxnState;
 import com.payswitch.switchservice.metrics.SwitchMetrics;
@@ -71,9 +72,11 @@ public class PaymentFlow {
     private final BankClient banks;
     private final Retrier retrier;
     private final SwitchMetrics metrics;
+    private final DemoCrash demoCrash;
 
     public PaymentFlow(TransactionService txns, BankRouter router, BankClient banks, Retrier retrier,
-                       SwitchMetrics metrics) {
+                       SwitchMetrics metrics, DemoCrash demoCrash) {
+        this.demoCrash = demoCrash;
         this.txns = txns;
         this.router = router;
         this.banks = banks;
@@ -109,7 +112,10 @@ public class PaymentFlow {
                 log.warn("Txn {}: debit outcome UNKNOWN ({}). Left in DEBIT_SENT.", txn.txnId(), debit.detail());
                 return;
             }
-            case SUCCESS -> txn = move(txn, TxnState.DEBITED, "DEBIT_OK");
+            case SUCCESS -> {
+                demoCrash.afterDebitBeforeSave(txn.txnId());   // the demo's "switch-crash"; a no-op otherwise
+                txn = move(txn, TxnState.DEBITED, "DEBIT_OK");
+            }
         }
 
         txn = sendCredit(txn);
@@ -189,7 +195,11 @@ public class PaymentFlow {
                     case DEBITED -> sendCredit(txn);          // e.g. crashed between DEBITED and CREDIT_SENT
                     case CREDIT_SENT -> resolveCredit(txn);
                     case REVERSAL_SENT -> resolveReversal(txn);
-                    case DEEMED_APPROVED -> recheckDeemed(txn);
+                    // Only if it was ALREADY deemed when we started (the job's recheck, every
+                    // deemed-recheck-after). A payment that has just become DEEMED_APPROVED here has
+                    // just had a full round of failed status checks: asking again at once only adds
+                    // load to a bank in trouble (found by the Phase 12 demo).
+                    case DEEMED_APPROVED -> step == 0 ? recheckDeemed(txn) : null;
                     default -> null;                          // final: nothing to do
                 };
                 if (after != null) {

@@ -8,6 +8,7 @@ import com.payswitch.switchservice.domain.Txn;
 import com.payswitch.switchservice.domain.TxnEvent;
 import com.payswitch.switchservice.domain.TxnState;
 import com.payswitch.switchservice.domain.TxnStateMachine;
+import com.payswitch.switchservice.live.TxnStateChanged;
 import com.payswitch.switchservice.metrics.SwitchMetrics;
 import com.payswitch.switchservice.routing.BankRoute;
 import com.payswitch.switchservice.routing.BankRouter;
@@ -20,6 +21,7 @@ import java.util.Optional;
 import java.util.Set;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -42,13 +44,15 @@ public class TransactionService {
     private final TxnEventRepository events;
     private final BankRouter router;
     private final SwitchMetrics metrics;
+    private final ApplicationEventPublisher publisher;
 
     public TransactionService(TransactionRepository txns, TxnEventRepository events, BankRouter router,
-                              SwitchMetrics metrics) {
+                              SwitchMetrics metrics, ApplicationEventPublisher publisher) {
         this.txns = txns;
         this.events = events;
         this.router = router;
         this.metrics = metrics;
+        this.publisher = publisher;
     }
 
     /**
@@ -85,6 +89,8 @@ public class TransactionService {
             throw new DuplicateTransactionException(txnId);
         }
         events.insert(txnId, null, TxnState.INITIATED, REASON_CREATED);
+        publisher.publishEvent(new TxnStateChanged(txnId, payer.address(), payee.address(), amount, null,
+                TxnState.INITIATED.name(), REASON_CREATED, Instant.now()));
         TxnMdc.state(txnId, TxnState.INITIATED.name());
         log.info("Txn {}: created, {} -> {}", txnId, payerBank.map(BankRoute::code).orElse("?"),
                 payeeBank.map(BankRoute::code).orElse("?"));
@@ -205,7 +211,12 @@ public class TransactionService {
         // 3. Record what happened. Same DB transaction as step 2.
         events.insert(current.txnId(), current.state(), newState, reason);
 
-        // 4. Observability: the log line carries txnId and the NEW state; a final state is counted
+        // 4. Tell the live monitor. Listeners use @TransactionalEventListener(AFTER_COMMIT), so this
+        //    is only DELIVERED once this transaction commits; if it rolls back, nobody hears of it.
+        publisher.publishEvent(new TxnStateChanged(current.txnId(), current.payerVpa(), current.payeeVpa(),
+                current.amount(), current.state().name(), newState.name(), reason, Instant.now()));
+
+        // 5. Observability: the log line carries txnId and the NEW state; a final state is counted
         //    once the transaction has committed.
         TxnMdc.state(current.txnId(), newState.name());
         log.info("Txn {}: {} -> {} ({})", current.txnId(), current.state(), newState, reason);

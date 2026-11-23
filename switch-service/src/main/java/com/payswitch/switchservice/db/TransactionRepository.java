@@ -174,6 +174,23 @@ public class TransactionRepository {
         return jdbc.sql("SELECT clock_timestamp()").query(OffsetDateTime.class).single().toInstant();
     }
 
+    /** The newest {@code limit} payments, newest first (for the live monitor's snapshot). */
+    public List<Txn> latest(int limit) {
+        return jdbc.sql("SELECT * FROM transactions ORDER BY created_at DESC, txn_id LIMIT :limit")
+                .param("limit", limit)
+                .query(TransactionRepository::map)
+                .list();
+    }
+
+    /** How many payments are in each state right now (all states, including final ones). */
+    public java.util.Map<TxnState, Long> countByState() {
+        java.util.Map<TxnState, Long> counts = new java.util.EnumMap<>(TxnState.class);
+        jdbc.sql("SELECT state, COUNT(*) AS n FROM transactions GROUP BY state")
+                .query((rs, n) -> counts.put(TxnState.valueOf(rs.getString("state")), rs.getLong("n")))
+                .list();
+        return counts;
+    }
+
     /** Which of these txnIds the switch knows at all (whatever their state or age). */
     public Set<String> existing(Collection<String> txnIds) {
         if (txnIds.isEmpty()) {

@@ -1,0 +1,33 @@
+# Dev override: publishes every service's own port again, for debugging.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
+#
+# Needed by anything that talks to a service directly instead of through the gateway:
+# the load generator and money auditor (Phase 10), curl against one bank, an IDE against Postgres.
+# (Compose "profiles" switch whole services on and off; they cannot add ports to a service.
+#  An override file is how Compose adds them.)
+services:
+  postgres:
+    ports:
+      - "5433:5432"
+  bank-a:
+    ports:
+      - "8081:8081"
+  bank-b:
+    ports:
+      - "8082:8082"
+  bank-c:
+    ports:
+      - "8084:8084"
+  switch:
+    ports:
+      - "8083:8083"
+  psp:
+    ports:
+      - "8080:8080"
+  prometheus:
+    ports:
+      - "9090:9090"
+  grafana:
+    ports:
+      - "3000:3000"
