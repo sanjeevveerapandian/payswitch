@@ -1,4 +1,6 @@
-# Send only what the builds need. Everything else (git history, IDE files, build output) stays out.
+# Send the Docker build only what the Java builds need. Everything else (git history, IDE files,
+# build output, results, secrets like .env) stays out: smaller context, faster builds, and nothing
+# private ends up inside an image layer.
 *
 !pom.xml
 !common

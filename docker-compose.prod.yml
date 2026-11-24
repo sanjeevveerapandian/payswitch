@@ -1,0 +1,135 @@
+# Production: layered ON TOP of docker-compose.yml, on the server that runs the public demo.
+#
+#   cp .env.example .env        # then fill in every value
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build --wait
+#
+# What this file changes, compared with the laptop setup:
+#   - secrets come ONLY from .env: compose refuses to start if one is missing (the ":?" below)
+#   - every container restarts by itself after a crash or a server reboot
+#   - every container has a memory limit, so one runaway service cannot starve the rest
+#   - the gateway listens on 127.0.0.1 only: Caddy (HTTPS) on the same server is the public door
+#   - Java services run with a read-only file system, no Linux capabilities and no privilege gain
+#   - logs are rotated, so they cannot fill the disk
+# Postgres, Prometheus, Grafana and the five services publish NO ports: they are reachable only
+# inside Docker's network, through the gateway.
+
+# Shared by every container.
+x-prod: &prod
+  restart: unless-stopped
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"                    # at most 3 files of 10 MB per container
+      max-file: "3"
+  security_opt:
+    - no-new-privileges:true             # nothing inside can gain more rights (e.g. via setuid files)
+
+# Shared by the five Java services.
+x-java: &java
+  <<: *prod
+  read_only: true                        # the app cannot change its own files, nor can an intruder
+  tmpfs:
+    - /tmp                               # Tomcat and the JVM need a writable /tmp; it lives in memory
+  cap_drop:
+    - ALL                                # a Java app on port 8080+ needs no Linux capabilities
+
+x-db-password: &db-password
+  DB_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+
+services:
+  postgres:
+    <<: *prod
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+
+  bank-a:
+    <<: *java
+    environment:
+      <<: *db-password
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+
+  bank-b:
+    <<: *java
+    environment:
+      <<: *db-password
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+
+  bank-c:
+    <<: *java
+    environment:
+      <<: *db-password
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+
+  switch:
+    <<: *java
+    environment:
+      <<: *db-password
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+
+  psp:
+    <<: *java
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+
+  prometheus:
+    <<: *prod
+    # Keep a week of metrics, on a volume so a restart does not lose them.
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=7d
+    volumes:
+      - prometheus-data:/prometheus
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+
+  grafana:
+    <<: *prod
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?Set GRAFANA_ADMIN_PASSWORD in .env}
+      GF_SERVER_ROOT_URL: ${PUBLIC_URL:?Set PUBLIC_URL in .env}/grafana/
+      GF_ANALYTICS_REPORTING_ENABLED: "false"   # no usage reports sent to Grafana Labs
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+
+  web:
+    <<: *prod
+    environment:
+      ADMIN_USER: ${ADMIN_USER:?Set ADMIN_USER in .env}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?Set ADMIN_PASSWORD in .env}
+    # !override REPLACES the base file's "8000:80" instead of adding to it.
+    # 127.0.0.1: only programs on this server (Caddy) can connect. Docker publishes ports by writing
+    # its own firewall rules, which skip ufw, so "0.0.0.0" here would be open to the whole internet
+    # even with ufw blocking port 8000.
+    ports: !override
+      - "127.0.0.1:${WEB_PORT:-8000}:80"
+    deploy:
+      resources:
+        limits:
+          memory: 64m
+
+volumes:
+  prometheus-data:

@@ -219,6 +219,19 @@ class ChaosBankTest extends BankIntegrationTest {
     }
 
     @Test
+    void anUnusedOnceRuleCanBeTakenBackOverHttp() {
+        String ravi = newCustomer(500_000);
+        caller.post().uri("/admin/chaos/once").contentType(MediaType.APPLICATION_JSON)
+                .body(Map.of("op", "DEBIT", "mode", "error")).retrieve().toBodilessEntity();
+        caller.post().uri("/admin/chaos/once").contentType(MediaType.APPLICATION_JSON)
+                .body(Map.of("op", "CREDIT", "mode", "decline")).retrieve().toBodilessEntity();
+
+        assertEquals(Map.of("CREDIT", "DECLINE"),
+                caller.delete().uri("/admin/chaos/once/DEBIT").retrieve().body(Map.class), "only DEBIT taken back");
+        assertEquals(BankResult.SUCCESS, debit(newTxnId(), ravi, 10_000).result());
+    }
+
+    @Test
     void aBadOnceRequestIs400() {
         HttpClientErrorException e = assertThrows(HttpClientErrorException.class, () ->
                 caller.post().uri("/admin/chaos/once").contentType(MediaType.APPLICATION_JSON)

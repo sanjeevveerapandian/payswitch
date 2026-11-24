@@ -1,0 +1,74 @@
+# Continuous integration: on every push and every pull request, prove the code still works.
+#
+#   verify  mvn verify: every unit and integration test (Testcontainers starts a real Postgres in
+#           the runner's Docker), plus the 5,000 payment chaos test (LoadChaosIT).
+#   images  builds every Docker image the production stack uses. Nothing is pushed anywhere:
+#           this only proves the images still build.
+name: CI
+
+on:
+  push:
+  pull_request:
+
+# Read the code, nothing else: this workflow needs no write access to the repository.
+permissions:
+  contents: read
+
+# A newer push to the same branch cancels the older run: only the latest commit matters.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: mvn verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      # Java 21 (Temurin, the same JDK as the Docker images). cache: maven saves ~/.m2/repository
+      # keyed on every pom.xml, so later runs do not download the libraries again.
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+
+      # -B: no colours or progress bars in the log. -ntp: no line per downloaded file.
+      # GitHub's Ubuntu runners have Docker, which is all Testcontainers needs.
+      - name: Build and run every test
+        run: mvn -B -ntp verify
+
+      # When a test fails, keep its reports so the failure can be read without re-running.
+      - name: Keep test reports
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports
+          path: |
+            **/target/surefire-reports/
+            **/target/failsafe-reports/
+          retention-days: 7
+
+  images:
+    name: Docker images build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      # The prod file needs its secrets to be set even to build; the example values are enough here.
+      - name: Check the production compose files
+        run: |
+          cp .env.example .env
+          docker compose -f docker-compose.yml -f docker-compose.prod.yml config --quiet
+
+      - name: Build every image (no push)
+        run: docker compose -f docker-compose.yml -f docker-compose.prod.yml build
+
+      # The gateway's config must be valid nginx. "nginx -t" needs the password file, so make one.
+      - name: Check the nginx config
+        run: |
+          docker run --rm --entrypoint sh payswitch/web -c \
+            'echo "ci:x" > /etc/nginx/admin.htpasswd && nginx -t'

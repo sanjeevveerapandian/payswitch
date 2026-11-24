@@ -49,6 +49,13 @@ switch:
   settlement:
     enabled: true
     interval: 1h
+  # Phase 12/13: the demo's scenarios and reseed (off unless SWITCH_DEMO_ENABLED=true).
+  demo:
+    enabled: false
+    # Every night at 03:30 Indian time, put the six demo customers back to their starting balances,
+    # using ordinary payments between them ("-" = never).
+    reseed-cron: "0 30 3 * * *"
+    reseed-zone: Asia/Kolkata
   # VPA routing: the handle after the @ decides the bank.
   #   ravi@banka -> handle "banka" -> Bank A
   banks:

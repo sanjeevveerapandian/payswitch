@@ -6,25 +6,17 @@ import com.payswitch.common.pay.ReqPay;
 import com.payswitch.common.pay.RespPay;
 import com.payswitch.switchservice.domain.Txn;
 import com.payswitch.switchservice.domain.TxnState;
-import com.payswitch.switchservice.routing.BankRoute;
-import com.payswitch.switchservice.routing.BankRouter;
-import com.payswitch.switchservice.routing.SwitchProperties;
 import com.payswitch.switchservice.service.PaymentOrchestrator;
 import com.payswitch.switchservice.service.TransactionService;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.EnumSet;
-import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
-import org.springframework.http.MediaType;
-import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.stereotype.Service;
-import org.springframework.web.client.RestClient;
-import org.springframework.web.client.RestClientException;
 
 /**
  * The demo's five scenarios. Each one sets up the banks (using their chaos endpoints) so ONE payment
@@ -33,6 +25,10 @@ import org.springframework.web.client.RestClientException;
  *
  * <p>Ravi (ravi@banka) pays Anu's shop (anu@bankb) in every scenario except insufficient-funds.
  * Only exists with switch.demo.enabled=true, and needs the banks' "chaos" profile.
+ *
+ * <p>Phase 13, safe for a public demo: only one scenario runs at a time ({@link DemoLock}; the rest
+ * get "busy, try again"), and every scenario takes back the chaos it set up, in a finally block,
+ * whether its payment used it or not.
  */
 @Service
 @ConditionalOnProperty(name = "switch.demo.enabled", havingValue = "true")
@@ -49,34 +45,47 @@ public class ScenarioService {
     public record Result(String scenario, String txnId, String state, String reason, String explanation) {
     }
 
+    static final Set<String> NAMES = Set.of("happy", "insufficient-funds", "debit-reply-lost",
+            "credit-unknown-deemed", "switch-crash");
+
     private final PaymentOrchestrator orchestrator;
     private final TransactionService txns;
-    private final BankRouter router;
     private final DemoCrash crash;
-    private final RestClient http;
+    private final DemoBankAdmin banks;
+    private final DemoLock lock;
 
-    public ScenarioService(PaymentOrchestrator orchestrator, TransactionService txns, BankRouter router,
-                           DemoCrash crash, RestClient.Builder builder, SwitchProperties properties) {
+    public ScenarioService(PaymentOrchestrator orchestrator, TransactionService txns, DemoCrash crash,
+                           DemoBankAdmin banks, DemoLock lock) {
         this.orchestrator = orchestrator;
         this.txns = txns;
-        this.router = router;
         this.crash = crash;
-        SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
-        factory.setConnectTimeout(properties.http().connectTimeout());
-        factory.setReadTimeout(properties.http().readTimeout());
-        this.http = builder.requestFactory(factory).build();
+        this.banks = banks;
+        this.lock = lock;
     }
 
+    /**
+     * @throws IllegalArgumentException   unknown name (checked BEFORE taking the lock)
+     * @throws DemoLock.DemoBusyException another scenario is running
+     */
     public Result run(String name) {
-        return switch (name) {
-            case "happy" -> happy();
-            case "insufficient-funds" -> insufficientFunds();
-            case "debit-reply-lost" -> debitReplyLost();
-            case "credit-unknown-deemed" -> creditUnknownDeemed();
-            case "switch-crash" -> switchCrash();
-            default -> throw new IllegalArgumentException("unknown scenario " + name + "; try happy, "
+        if (!NAMES.contains(name)) {
+            throw new IllegalArgumentException("unknown scenario " + name + "; try happy, "
                     + "insufficient-funds, debit-reply-lost, credit-unknown-deemed or switch-crash");
-        };
+        }
+        lock.acquire(name);
+        if (name.equals("switch-crash")) {
+            return switchCrash();                         // releases the lock itself, from its own thread
+        }
+        try {
+            return switch (name) {
+                case "happy" -> happy();
+                case "insufficient-funds" -> insufficientFunds();
+                case "debit-reply-lost" -> debitReplyLost();
+                default -> creditUnknownDeemed();
+            };
+        } finally {
+            lock.release();
+        }
     }
 
     /** Nothing goes wrong: debit, credit, SUCCESS. */
@@ -97,8 +106,13 @@ public class ScenarioService {
      * Bank A (status check), learns the debit happened, and carries on to the credit.
      */
     Result debitReplyLost() {
-        armOnce("BANKA", "DEBIT", "drop_response");
-        RespPay r = pay(RAVI, ANU, 50_00);
+        banks.armOnce("BANKA", "DEBIT", "drop_response");
+        RespPay r;
+        try {
+            r = pay(RAVI, ANU, 50_00);
+        } finally {
+            banks.disarmOnce("BANKA", "DEBIT");             // normally already used; if not, gone now
+        }
         return result("debit-reply-lost", r, "Bank A debited Ravi but the reply was lost (timeout after 5 s). "
                 + "A status check found the debit (DEBIT_CONFIRMED_BY_STATUS), so the switch went on to credit Anu.");
     }
@@ -109,24 +123,22 @@ public class ScenarioService {
      * a guess. Recon later reads Bank B's books, finds the credit, and finishes it as SUCCESS.
      */
     Result creditUnknownDeemed() {
-        JsonNode before = http.get().uri(bank("BANKB").url() + "/admin/chaos").retrieve().body(JsonNode.class);
-        if (before == null) {
-            throw new ScenarioUnavailableException("Bank B did not report its chaos settings");
-        }
+        JsonNode before = banks.chaos("BANKB");
         ObjectNode failingChecks = before.deepCopy();
         failingChecks.put("statusErrorRate", 1.0);
         String txnId = newTxnId();
         try {
-            setChaos("BANKB", failingChecks);                 // first: this also clears one-shot rules
-            armOnce("BANKB", "CREDIT", "drop_response");
+            banks.setChaos("BANKB", failingChecks);           // first: this also clears one-shot rules
+            banks.armOnce("BANKB", "CREDIT", "drop_response");
             pay(new ReqPay(txnId, RAVI, ANU, 75_00));
             Txn txn = waitUntilNoLongerInFlight(txnId, Duration.ofSeconds(40));
             return new Result("credit-unknown-deemed", txnId, txn.state().name(), lastReason(txnId),
                     "Bank B credited Anu but the reply was lost, and every status check failed. The switch cannot "
-                            + "know if Anu was paid, so it does NOT refund Ravi: DEEMED_APPROVED. Wait ~10 s, then "
-                            + "press Run recon: recon finds the credit in Bank B's books and finishes it as SUCCESS.");
+                            + "know if Anu was paid, so it does NOT refund Ravi: DEEMED_APPROVED. Recon runs by itself "
+                            + "every minute: within about two minutes it finds the credit in Bank B's books and the "
+                            + "payment turns SUCCESS in the monitor. (Admins can press Run recon to do it now.)");
         } finally {
-            setChaos("BANKB", before);                        // Bank B's status checks work again
+            banks.setChaos("BANKB", before);                  // status checks work again; the one-shot rule is gone
         }
     }
 
@@ -136,18 +148,29 @@ public class ScenarioService {
      * recovery asks Bank A, finds the debit, and finishes the payment.
      */
     Result switchCrash() {
-        crash.arm();
         String txnId = newTxnId();
-        Thread.ofVirtual().name("demo-crash-payment").start(() -> {
-            try {
-                Thread.sleep(500);                            // let this HTTP answer reach the browser first
-                pay(new ReqPay(txnId, RAVI, ANU, 100_00));
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-            } catch (RuntimeException e) {
-                log.warn("switch-crash scenario payment failed: {}", e.toString());
-            }
-        });
+        try {
+            crash.arm(txnId);                                 // only THIS payment can trigger it
+            Thread.ofVirtual().name("demo-crash-payment").start(() -> {
+                try {
+                    Thread.sleep(500);                        // let this HTTP answer reach the browser first
+                    pay(new ReqPay(txnId, RAVI, ANU, 100_00));
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                } catch (RuntimeException e) {
+                    log.warn("switch-crash scenario payment failed: {}", e.toString());
+                } finally {
+                    // Normally never reached: the process is gone. Reached if the payment got no debit
+                    // (e.g. Ravi is out of money): stand down, and let the next scenario run.
+                    crash.disarm(txnId);
+                    lock.release();
+                }
+            });
+        } catch (RuntimeException e) {
+            crash.disarm(txnId);
+            lock.release();
+            throw e;
+        }
         return new Result("switch-crash", txnId, "INITIATED", null, "The switch will die right after Bank A "
                 + "debits Ravi, before it can save DEBITED. Watch the monitor reconnect when Docker restarts it (~10 s). "
                 + "Ravi's money shows as in transit until the resolver picks the payment up (stuck-after, ~10 s more), "
@@ -193,25 +216,6 @@ public class ScenarioService {
                 return txn;
             }
         }
-    }
-
-    private void armOnce(String bankCode, String op, String mode) {
-        try {
-            http.post().uri(bank(bankCode).url() + "/admin/chaos/once").contentType(MediaType.APPLICATION_JSON)
-                    .body(Map.of("op", op, "mode", mode)).retrieve().toBodilessEntity();
-        } catch (RestClientException e) {
-            throw new ScenarioUnavailableException(bankCode + " refused to arm chaos (is its 'chaos' profile on?): "
-                    + e.getMessage());
-        }
-    }
-
-    private void setChaos(String bankCode, JsonNode settings) {
-        http.post().uri(bank(bankCode).url() + "/admin/chaos").contentType(MediaType.APPLICATION_JSON)
-                .body(settings).retrieve().toBodilessEntity();
-    }
-
-    private BankRoute bank(String code) {
-        return router.byCode(code).orElseThrow(() -> new ScenarioUnavailableException("no bank " + code));
     }
 
     private static String newTxnId() {

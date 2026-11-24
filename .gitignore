@@ -2,3 +2,6 @@ target/
 .idea/
 *.iml
 .vscode/
+
+# Secrets for docker compose (copy .env.example). Never commit the real one.
+.env

@@ -8,9 +8,16 @@ import com.payswitch.common.pay.PayState;
 import com.payswitch.common.pay.RespPay;
 import com.payswitch.common.pay.TxnDetails;
 import com.payswitch.common.pay.TxnEventView;
+import com.payswitch.switchservice.demo.DemoReseedService;
+import java.io.IOException;
+import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
 import java.time.Instant;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -117,6 +124,8 @@ class DemoEndToEndTest {
         String txnId = r.get("txnId").asText();
         assertEquals("SUCCESS", r.get("state").asText());
         assertTrue(reasons(txnId).contains("DEBIT_CONFIRMED_BY_STATUS"), reasons(txnId).toString());
+        assertEquals(Map.of(), http.get().uri(system.bankAUrl() + "/admin/chaos/once").retrieve().body(Map.class),
+                "the scenario left no one-shot rule behind");
     }
 
     @Test
@@ -135,6 +144,60 @@ class DemoEndToEndTest {
 
         assertEquals("SUCCESS", state(txnId));
         assertTrue(reasons(txnId).contains("RECON_CREDIT_FOUND"), reasons(txnId).toString());
+    }
+
+    // ---- Phase 13: reseed -------------------------------------------------------------------------
+
+    /** The reseed's starting balances are the ones the banks were really seeded with. */
+    @Test
+    void reseedTargetsMatchTheBanksSeedFiles() throws IOException {
+        Map<String, Long> seeded = new HashMap<>();
+        for (String bank : List.of("BANKA", "BANKB", "BANKC")) {
+            String sql;
+            try (InputStream in = getClass().getResourceAsStream("/db/bank/seed/" + bank + "/V100__seed_customers.sql")) {
+                sql = new String(in.readAllBytes(), StandardCharsets.UTF_8);
+            }
+            Map<String, String> vpaById = new HashMap<>();
+            Matcher account = Pattern.compile("\\('(ACC-\\w+)',\\s*'([^']+@[^']+)'").matcher(sql);
+            while (account.find()) {
+                vpaById.put(account.group(1), account.group(2));
+            }
+            Matcher line = Pattern.compile("'(ACC-\\w+)',\\s*-(\\d+)\\)").matcher(sql);
+            while (line.find()) {
+                if (vpaById.containsKey(line.group(1))) {
+                    seeded.put(vpaById.get(line.group(1)), Long.parseLong(line.group(2)));
+                }
+            }
+        }
+        assertEquals(seeded, DemoReseedService.STARTING_BALANCES);
+    }
+
+    /** Ravi pays Anu; the reseed pays it back with ordinary payments. TOTAL is checked after every test. */
+    @Test
+    void reseedMovesMoneyBackWithOrdinaryPaymentsAndCreatesNone() {
+        http.post().uri(system.pspUrl() + "/pay").contentType(MediaType.APPLICATION_JSON)
+                .body(Map.of("payerVpa", "ravi@banka", "payeeVpa", "anu@bankb", "amount", "100.00"))
+                .retrieve().toBodilessEntity();
+        long customersBefore = summary().get("customerMoney").asLong();
+
+        JsonNode r = http.post().uri(system.switchUrl() + "/admin/demo/reseed").retrieve().body(JsonNode.class);
+
+        long moved = 0;
+        for (JsonNode p : r.get("payments")) {
+            assertEquals("SUCCESS", p.get("state").asText(), p.toString());
+            assertEquals("SUCCESS", state(p.get("txnId").asText()), "a real payment the switch knows");
+            moved += p.get("amount").asLong();
+        }
+        assertTrue(moved >= 100_00, "at least Ravi's Rs 100 went back: " + r);
+        assertEquals(customersBefore, summary().get("customerMoney").asLong(), "customers' money only moved");
+        boolean above = false;
+        boolean below = false;
+        for (Map.Entry<String, Long> start : DemoReseedService.STARTING_BALANCES.entrySet()) {
+            long now = r.get("after").get(start.getKey()).asLong();
+            above |= now > start.getValue();
+            below |= now < start.getValue();
+        }
+        assertTrue(!(above && below), "as close to the start as the money allows: " + r.get("after"));
     }
 
     @Test

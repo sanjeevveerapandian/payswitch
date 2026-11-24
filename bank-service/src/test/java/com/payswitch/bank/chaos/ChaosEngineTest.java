@@ -168,6 +168,90 @@ class ChaosEngineTest {
         assertEquals("checked", engine.runStatusCheck("T2", () -> "checked"));
     }
 
+    // ---- Phase 13: chaos switches itself off -------------------------------------------------------
+
+    /** A clock the test moves by hand. */
+    static final class HandClock extends java.time.Clock {
+        private java.time.Instant now = java.time.Instant.parse("2026-01-01T10:00:00Z");
+
+        void advance(Duration d) {
+            now = now.plus(d);
+        }
+
+        @Override
+        public java.time.ZoneId getZone() {
+            return java.time.ZoneOffset.UTC;
+        }
+
+        @Override
+        public java.time.Clock withZone(java.time.ZoneId zone) {
+            return this;
+        }
+
+        @Override
+        public java.time.Instant instant() {
+            return now;
+        }
+    }
+
+    private static final ChaosSettings ALWAYS_ERROR = new ChaosSettings(0, 1.0, 0, 0, null, 1.0);
+
+    @Test
+    void chaosResetsItselfFiveMinutesAfterTheLastChange() {
+        HandClock clock = new HandClock();
+        ChaosEngine engine = new ChaosEngine(Duration.ZERO, Duration.ofMinutes(5), BankMetrics.inMemory(), clock);
+        engine.configure(ALWAYS_ERROR);
+        engine.armOnce("CREDIT", "decline");
+
+        clock.advance(Duration.ofMinutes(4).plusSeconds(59));
+        assertEquals(ALWAYS_ERROR, engine.settings(), "still on just before the limit");
+        assertEquals(java.util.Map.of("CREDIT", ChaosDecision.DECLINE), engine.pendingOnce());
+        assertThrows(ChaosFailureException.class, () -> engine.run(OpType.DEBIT, "T1",
+                () -> BankResponse.success("T1", OpType.DEBIT)));
+
+        clock.advance(Duration.ofSeconds(1));
+        // A bank call is the first thing to notice: it already runs without chaos.
+        assertEquals(BankResult.SUCCESS, engine.run(OpType.DEBIT, "T2",
+                () -> BankResponse.success("T2", OpType.DEBIT)).result());
+        assertEquals("checked", engine.runStatusCheck("T3", () -> "checked"));
+        assertEquals(ChaosSettings.NONE, engine.settings());
+        assertEquals(java.util.Map.of(), engine.pendingOnce(), "one-shot rules go too");
+    }
+
+    @Test
+    void everyChangeStartsTheFiveMinutesAgain() {
+        HandClock clock = new HandClock();
+        ChaosEngine engine = new ChaosEngine(Duration.ZERO, Duration.ofMinutes(5), BankMetrics.inMemory(), clock);
+        engine.configure(ALWAYS_ERROR);
+        clock.advance(Duration.ofMinutes(4));
+        engine.armOnce("DEBIT", "error");                 // a change: the clock starts again
+        clock.advance(Duration.ofMinutes(4));
+        assertEquals(ALWAYS_ERROR, engine.settings());
+        clock.advance(Duration.ofMinutes(1));
+        assertEquals(ChaosSettings.NONE, engine.settings());
+    }
+
+    @Test
+    void withAutoResetZeroChaosStaysOnForever() {
+        HandClock clock = new HandClock();
+        ChaosEngine engine = new ChaosEngine(Duration.ZERO, Duration.ZERO, BankMetrics.inMemory(), clock);
+        engine.configure(ALWAYS_ERROR);
+        clock.advance(Duration.ofDays(1));
+        assertEquals(ALWAYS_ERROR, engine.settings());
+    }
+
+    @Test
+    void anUnusedOneShotRuleCanBeTakenBack() {
+        ChaosEngine engine = new ChaosEngine(Duration.ZERO, BankMetrics.inMemory());
+        engine.armOnce("DEBIT", "drop_response");
+        engine.armOnce("CREDIT", "error");
+        assertEquals(true, engine.disarmOnce("debit"));
+        assertEquals(false, engine.disarmOnce("DEBIT"), "nothing left to take back");
+        assertEquals(java.util.Map.of("CREDIT", ChaosDecision.ERROR), engine.pendingOnce());
+        assertEquals(BankResult.SUCCESS, engine.run(OpType.DEBIT, "T1",
+                () -> BankResponse.success("T1", OpType.DEBIT)).result());
+    }
+
     /** What chaos did to each of n calls, as text: PROCEED / DECLINE / ERROR / DROP_RESPONSE. */
     private static List<String> runCalls(ChaosEngine engine, int n) {
         List<String> seen = new ArrayList<>();

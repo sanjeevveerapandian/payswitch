@@ -24,6 +24,7 @@
 }
 
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 body { margin: 0; line-height: 1.45; background: var(--bg); }
 h1, h2, h3 { margin: 0; line-height: 1.2; }
 h2 { font-size: 1.1rem; }
@@ -43,6 +44,10 @@ a { color: var(--accent); }
   background: var(--accent); font-weight: 700;
 }
 .brand h1 { font-size: 1.35rem; }
+.admin-box { display: flex; align-items: center; gap: .5rem; margin-left: auto; }
+.admin-status { color: #d5dce8; font-size: .9rem; }
+button.link.on-dark { color: #f3f6fb; }
+button.secondary.on-dark { background: transparent; color: #f3f6fb; border-color: #8593aa; }
 .sub { margin: .1rem 0 0; color: #b9c3d3; font-size: .85rem; }
 
 .money { text-align: right; }

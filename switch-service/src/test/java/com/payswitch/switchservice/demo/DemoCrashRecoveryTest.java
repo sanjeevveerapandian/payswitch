@@ -67,7 +67,7 @@ class DemoCrashRecoveryTest {
         when(banks.credit(any(), any())).thenReturn(BankCallResult.success());
         when(banks.statusCheckAndFence(any(), any(), eq(OpType.DEBIT))).thenReturn(BankCallResult.success());
         String txnId = "TXN-" + UUID.randomUUID();
-        crash.arm();
+        crash.arm(txnId);
 
         assertThrows(Halted.class, () -> orchestrator.pay(new ReqPay(txnId, "ravi@banka", "anu@bankb", 10_000)));
 
@@ -86,9 +86,9 @@ class DemoCrashRecoveryTest {
         doThrow(new Halted()).when(crash).halt();
         when(banks.debit(any(), any())).thenReturn(BankCallResult.success());
         when(banks.credit(any(), any())).thenReturn(BankCallResult.success());
-        crash.arm();
-        assertThrows(Halted.class, () -> orchestrator.pay(new ReqPay("TXN-" + UUID.randomUUID(),
-                "ravi@banka", "anu@bankb", 10_000)));
+        String armed = "TXN-" + UUID.randomUUID();
+        crash.arm(armed);
+        assertThrows(Halted.class, () -> orchestrator.pay(new ReqPay(armed, "ravi@banka", "anu@bankb", 10_000)));
 
         String next = "TXN-" + UUID.randomUUID();
         orchestrator.pay(new ReqPay(next, "ravi@banka", "anu@bankb", 10_000));
@@ -96,10 +96,30 @@ class DemoCrashRecoveryTest {
         assertEquals(TxnState.SUCCESS, txns.get(next).state());
     }
 
+    /** Phase 13: on a public demo, a stranger's payment debited at the same moment must not kill the switch. */
+    @Test
+    void onlyThePaymentItWasArmedForTriggersIt() {
+        doThrow(new Halted()).when(crash).halt();
+        when(banks.debit(any(), any())).thenReturn(BankCallResult.success());
+        when(banks.credit(any(), any())).thenReturn(BankCallResult.success());
+        String scenarios = "TXN-" + UUID.randomUUID();
+        crash.arm(scenarios);
+
+        String strangers = "TXN-" + UUID.randomUUID();
+        orchestrator.pay(new ReqPay(strangers, "kiran@bankb", "ravi@banka", 10_000));
+        assertEquals(TxnState.SUCCESS, txns.get(strangers).state());
+        verify(crash, times(0)).halt();
+
+        crash.disarm(scenarios);                       // the scenario stands down: nothing is armed any more
+        orchestrator.pay(new ReqPay(scenarios, "ravi@banka", "anu@bankb", 10_000));
+        assertEquals(TxnState.SUCCESS, txns.get(scenarios).state());
+        verify(crash, times(0)).halt();
+    }
+
     @Test
     void withDemoOffItCannotBeArmed() {
         DemoCrash off = new DemoCrash(false);
-        assertThrows(IllegalStateException.class, off::arm);
+        assertThrows(IllegalStateException.class, () -> off.arm("TXN-1"));
         off.afterDebitBeforeSave("TXN-1");             // never halts
     }
 }

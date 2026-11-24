@@ -5,6 +5,9 @@ bank:
     # Only used with the "chaos" profile. A dropped response stays silent this long, which
     # must be longer than the switch's read timeout (5s) so the switch gives up first.
     drop-response-sleep: 8s
+    # Phase 13: switch all chaos off again this long after the last change (0 = never).
+    # The demo stack sets 5m (docker-compose.yml) so one visitor's chaos cannot spoil the demo.
+    auto-reset-after: ${BANK_CHAOS_AUTO_RESET_AFTER:0s}
 
 server:
   port: ${PORT:8081}

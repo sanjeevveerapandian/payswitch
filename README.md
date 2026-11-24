@@ -1,47 +1,113 @@
 # PaySwitch
 
-A UPI-style payment switch **simulator**: a payer's app, a switch and three banks that move money
-between each other safely, even when the network loses messages or a bank stops answering, and
-then settle up with each other through a central bank.
-Java 21, Spring Boot 3, PostgreSQL, Docker Compose.
+**A UPI-style payment switch simulator that never loses a paisa, even when banks time out, replies get lost
+and the switch itself crashes mid-payment.** Java 21, Spring Boot 3, PostgreSQL, Docker Compose.
 
-> **Disclaimer:** PaySwitch is a learning project and a simulator. It is not affiliated with NPCI,
-> UPI or any bank, it does not connect to any real bank or payment network, and it moves no real money.
+[![CI](https://github.com/sanjeevveerapandian/payswitch/actions/workflows/ci.yml/badge.svg)](https://github.com/sanjeevveerapandian/payswitch/actions/workflows/ci.yml)
+
+**Live demo:** _coming soon_ <!-- replace with the deployed URL, e.g. https://payswitch.example.com -->
+
+<!-- Demo recording: add docs/images/demo.gif and replace this comment with
+     ![PaySwitch demo: a payment, a lost reply, and the switch crashing and recovering](docs/images/demo.gif) -->
+> _Screenshot / GIF of the live demo: to be added (`docs/images/demo.gif`)._
+
+### Headline result
+
+Three runs of 1,00,000 payments each, sent through the PSP, then checked by the `MoneyAuditor`
+reading every database directly. **All three runs: RESULT: PASS. Not one paisa was created or lost.**
+
+(Details, numbers and what this does not prove: [Results](#results) and [RESULTS.md](RESULTS.md).)
+
+> **Disclaimer:** PaySwitch is a learning project and a **simulator**. It is not affiliated with NPCI or any
+> bank, does not connect to any real bank or payment network, moves **no real money**, and uses no NPCI or
+> UPI names, logos or marks as its own.
+
+---
+
+## What happens when you pay
+
+1. Ravi's payment app (the **PSP**) sends "Ravi pays Anu's shop Rs 200" to the **switch**, the hub between banks.
+2. The switch asks **Ravi's bank** to take Rs 200 out of Ravi's account (a debit).
+3. It then asks **Anu's bank** to put Rs 200 into Anu's account (a credit). Both banks keep double-entry books.
+4. If a bank does not answer, the switch **asks what happened** instead of guessing, and finishes or refunds the payment.
+5. At the end of a cycle the banks **settle** with each other through a central bank: only the net amount moves.
 
 ## Architecture
 
 ```mermaid
 flowchart LR
-    U([Browser / payer's app]) -->|:8000| WEB[web: nginx<br/>UI + gateway]
-    WEB -->|/api/psp: POST /pay<br/>rupees as text| PSP[PSP<br/>:8080]
-    WEB -.->|/api/switch: live events,<br/>admin, scenarios| SW
-    PSP -->|ReqPay<br/>paise| SW[Switch<br/>:8083]
-    SW -->|debit / reverse<br/>status-check| A[Bank A<br/>:8081]
-    SW -->|credit<br/>status-check| B[Bank B<br/>:8082]
-    SW --> C[Bank C<br/>:8084]
-    SW --- DBS[(switch db<br/>+ central bank ledger)]
-    A --- DBA[(banka db)]
-    B --- DBB[(bankb db)]
-    C --- DBC[(bankc db)]
-    subgraph Postgres
-        DBS
-        DBA
-        DBB
-        DBC
+    U([Browser]) -->|HTTPS| PROXY[HTTPS proxy<br/>production only]
+    PROXY --> WEB
+    U -.->|local: :8000| WEB[web: nginx<br/>UI + the only gateway<br/>rate limits, admin password]
+    WEB -->|/api/psp/pay| PSP[PSP<br/>payer's app backend]
+    WEB -->|live events, scenarios,<br/>money summary| SW
+    PSP -->|ReqPay, paise| SW[Switch<br/>state machine, resolver,<br/>recon, settlement]
+    SW -->|debit / credit / reverse<br/>status-check| A[Bank A]
+    SW --> B[Bank B]
+    SW --> C[Bank C]
+    subgraph PG[PostgreSQL: one database per service]
+        DBS[(switch +<br/>central bank ledger)]
+        DBA[(banka)]
+        DBB[(bankb)]
+        DBC[(bankc)]
     end
+    SW --- DBS
+    A --- DBA
+    B --- DBB
+    C --- DBC
+    PROM[Prometheus] -.->|scrapes /actuator/prometheus| PSP & SW & A & B & C
+    GRAF[Grafana] -.-> PROM
+    WEB -->|/grafana, admin only| GRAF
 ```
 
 | Service | Job |
 |---|---|
-| **web** | nginx: serves the demo UI and is the only published port; forwards `/api/...` to each service. |
-| **PSP** | The payer's app backend. Validates the request, turns rupees into paise (the only place that happens), makes a txnId. |
-| **Switch** | Finds each bank from the VPA handle (`@banka`, `@bankb`, `@bankc`), runs the payment as a state machine, resolves every unclear bank answer, reconciles with the banks and settles cycles. |
-| **Bank A / B / C** | The same app run three times. A double-entry ledger with idempotent debit, credit and reverse. |
-| `ledger-core` | The double-entry rules in plain Java, with no Spring or database. |
-| `observability` | The txnId filter, header interceptor and MDC helper every service shares. |
-| Prometheus + Grafana | Scrape every service's metrics; one provisioned dashboard and three alert rules. |
+| **web** | nginx: serves the demo UI and is the only way in. Public routes are an allow-list; everything admin needs a password; requests are rate limited. |
+| **PSP** | The payer's app backend. Validates the request, turns rupees into paise (the only place that happens), makes the txnId. |
+| **Switch** | Routes by VPA handle (`@banka`, `@bankb`, `@bankc`), runs each payment as a state machine, resolves unclear bank answers, reconciles with the banks, settles cycles. |
+| **Bank A / B / C** | One app run three times. A double-entry ledger with idempotent debit, credit and reverse, and a status check that can fence. |
+| `ledger-core` | The double-entry rules in plain Java: no Spring, no database. |
+| `observability` | The txnId filter, header interceptor and log context every service shares. |
+| Prometheus + Grafana | Metrics from every service, one provisioned dashboard, three alert rules. |
 
-## A payment's life (the switch's state machine)
+## A payment, including a failure
+
+Bank B credits Anu but its reply never arrives. A timeout is not a "no", so the switch asks:
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Ravi
+    participant PSP
+    participant SW as Switch
+    participant A as Bank A (Ravi)
+    participant B as Bank B (Anu)
+    Ravi->>PSP: pay Anu Rs 200.00
+    PSP->>SW: ReqPay(txnId, 20000 paise)
+    Note over SW: INITIATED, then DEBIT_SENT<br/>(each state saved BEFORE the bank call)
+    SW->>A: debit(txnId, 20000)
+    A-->>SW: SUCCESS
+    Note over SW: DEBITED, then CREDIT_SENT
+    SW->>B: credit(txnId, 20000)
+    B--xSW: no reply: timeout after 5 s
+    Note over SW: UNKNOWN is not FAILED
+    SW->>B: status-check(txnId, CREDIT, fence)
+    alt Bank B has the credit
+        B-->>SW: FOUND: SUCCESS
+        Note over SW: SUCCESS (CREDIT_CONFIRMED_BY_STATUS)
+    else Bank B has no record
+        B-->>SW: FENCED: a tombstone, so that credit can never run later
+        SW->>A: reverse(txnId)
+        A-->>SW: SUCCESS
+        Note over SW: REVERSED: Ravi has his Rs 200 back
+    else every status check fails
+        Note over SW: DEEMED_APPROVED: never reversed on a guess.<br/>Recon later reads Bank B's books and finishes it.
+    end
+    SW-->>PSP: final state (or PENDING while still resolving)
+    PSP-->>Ravi: SUCCESS / REVERSED / PENDING
+```
+
+## The state machine
 
 ```mermaid
 stateDiagram-v2
@@ -65,15 +131,11 @@ stateDiagram-v2
     REVERSED --> [*]
 ```
 
-Each state is saved **before** the bank is called, so after a crash the database says exactly
-which bank to ask about what. Payments that stop moving are picked up by a background job, and
-once when the switch starts (crash recovery).
-
-| State | Where is Ravi's Rs 200? | Customer sees |
+| State | Where is Ravi's Rs 200? | Ravi sees |
 |---|---|---|
 | INITIATED | With Ravi | PENDING |
 | DEBIT_SENT | Not known yet: with Ravi, or in Bank A's settlement account | PENDING |
-| DEBITED | In transit (Bank A settlement) | PENDING |
+| DEBITED | In transit (Bank A's settlement account) | PENDING |
 | CREDIT_SENT | In transit, or already with Anu | PENDING |
 | DEEMED_APPROVED | Believed with Anu; checked again later | PENDING |
 | REVERSAL_SENT | In transit, or already back with Ravi | PENDING |
@@ -81,242 +143,178 @@ once when the switch starts (crash recovery).
 | FAILED | With Ravi (it never left) | FAILED |
 | REVERSED | With Ravi (it left and came back) | REVERSED |
 
-## Run it
+## Design decisions, and why
+
+| Decision | Why |
+|---|---|
+| **Money is `long` paise, never `double`** | `0.1 + 0.2` is not `0.3` in floating point; money must be exact. Rupees exist only at the PSP's edge, parsed with `BigDecimal`. A decimal amount anywhere else is refused, not rounded. |
+| **Double-entry ledger: every entry's lines sum to zero** | Money can only move between accounts, never appear or vanish, and one SQL query can prove it. Enforced in `ledger-core` and checked by an audit query after tests. |
+| **Idempotency key (txnId, operation) saved in the SAME transaction as the money** | Retries are unavoidable on a network. Claiming the key, moving the money and saving the answer commit together, so a crash can never leave "money moved but no record" (a retry would debit twice) or the reverse. A repeat gets the saved answer. |
+| **`SELECT ... FOR UPDATE` in the banks; optimistic locking in the switch** | A bank transaction is milliseconds long, so locking the account rows (in id order: no deadlocks) is simple and stops lost updates. The switch waits seconds for banks; holding a lock that long would block everyone, so it uses a `version` column and retries on conflict instead. |
+| **UNKNOWN is not FAILED** | A timeout, an HTTP 500 or a lost reply means "I don't know". Treating it as FAILED would refund a debit that actually happened (money created) or tell Ravi "failed" for a payment Anu received. Every bank answer is classified SUCCESS, DECLINED or UNKNOWN in one place. |
+| **Status check with fencing, and tombstones** | "No record" alone proves nothing: the original request may still arrive later. So the status check also writes a FENCED tombstone for that (txnId, operation); if the late request arrives, it is refused. Only then is FAILED safe to say. |
+| **Unknown debit: reverse. Unknown credit: never reverse (DEEMED_APPROVED)** | Reversing a debit is safe whether or not it happened: if it never did, the bank answers NO_DEBIT and blocks that debit from ever running later. Reversing a credit that did happen would pay Ravi back while Anu keeps the money: money created. So an unconfirmable credit waits. |
+| **Reconciliation** | The switch's records and each bank's books are compared txnId by txnId, window by window. It finishes DEEMED_APPROVED payments from the bank's own books and flags any disagreement for a human. |
+| **Multilateral net settlement, of reconciled payments only** | Banks pay only their net position each cycle (the positions always sum to zero), so far less money moves; in the 1 lakh runs netting saved 98.6-99.6% of the gross. Nothing settles that the banks' books do not confirm. |
+| **Live events published AFTER the database commit** | `@TransactionalEventListener(AFTER_COMMIT)`: a browser must never see a state that is later rolled back. Sent over Server-Sent Events, batched every 200 ms. |
+| **No high-cardinality metric labels** | Every label combination is its own time series. A txnId, VPA or amount label would create one per payment and sink Prometheus. Labels are small fixed sets (state, bank, op); one payment is found in the logs by its txnId instead. |
+| **One gateway, an allow-list of public routes** | One origin for the browser (no CORS), one port to expose. A bank's own `/credit` endpoint is never public; admin routes need a password; requests are rate limited. |
+
+## Testing
+
+| Layer | What | How |
+|---|---|---|
+| Unit | Ledger rules, the state machine, the bank-answer classifier, retry timing, net positions, reseed planning, chaos rules | Plain JUnit 5, no Spring where possible (`ledger-core` has no Spring at all) |
+| Integration | Each service against a **real PostgreSQL** | Testcontainers. Concurrency tests (parallel debits on one account, the same txnId at once), crash points, recon, settlement |
+| End to end | PSP, switch and three banks talking real HTTP in one JVM | `e2e-tests`: every scenario, chaos, crash and restart, reconciliation, settlement |
+| Chaos + auditor | 5,000 payments with chaos in every `mvn verify` (`LoadChaosIT`); 1,00,000 in the big runs | The load generator, then the **money auditor** reads every database directly |
+
+The auditor trusts no service API. It reads the four databases with SQL and checks:
+
+1. total customer money unchanged;
+2. no payment left unfinished;
+3. no txnId debited or credited twice;
+4. every outcome matches the money moved (SUCCESS = exactly one debit and one credit; FAILED/REVERSED = zero net effect);
+5. every customer's balance is explained by the switch's final states;
+6. settlement squared up (every bank's settlement account back to 0, central ledger balanced, net positions sum to 0);
+7. no reconciliation exceptions;
+8. no customer was told a final answer that later changed.
+
+### Bugs found by the chaos test
+
+From [RESULTS.md](RESULTS.md):
+
+1. **Recon could skip payments and still say COMPLETED (real bug, switch-service).** Recon asked "which payments
+   are old enough?" and later "how many were too new?", each with its own `now()`; payments in between were counted
+   nowhere. Found because check 6 failed: 157 payments were never reconciled. Fixed with one horizon per run, taken
+   once from the database clock; `ReconHorizonTest` failed on the old code and passes now.
+2. **Seed script overflow (test harness).** `285 * 20000000` overflowed a 32-bit `INTEGER` in Postgres. Fixed
+   with `::bigint`: a good reminder of why money is `long`.
+3. **Payments sent before the PSP was up (test harness).** The generator now waits for `/actuator/health`.
+4. **The auditor gave up during a long recon (test harness).** Recon calls now retry until a deadline.
+
+Run them:
+
+```bash
+mvn test       # unit + integration + end to end (needs Docker for Testcontainers)
+mvn verify     # also the 5,000 payment chaos test (about 2 more minutes)
+```
+
+CI runs `mvn verify` and builds every Docker image on each push and pull request.
+
+## Results
+
+One laptop: AMD Ryzen 5 5625U (6 cores / 12 threads), 15.4 GB RAM, Windows 11, Docker Desktop on WSL2 with
+12 CPUs and 7.4 GiB given to Docker. The load generator, all five services and one Postgres ran on it together.
+50 payments in flight; seed 42; chaos = 5% declines, 3% HTTP 500, 2% dropped replies, 5% failing status
+checks and 0-300 ms random delay on every bank.
+
+| | Run A: no chaos | Run B: chaos | Run C: chaos + switch crash at 50% |
+|---|---|---|---|
+| **Money audit** | **PASS** | **PASS** | **PASS** |
+| Final SUCCESS | 98,671 | 83,530 | 82,034 |
+| Final FAILED | 1,329 | 9,252 | 9,159 |
+| Final REVERSED (payer refunded) | 0 | 7,218 | 7,207 |
+| Never reached the switch (HTTP 502, no money moved) | 0 | 0 | 1,600 |
+| Recon exceptions | 0 | 0 | 0 |
+| TPS (50 concurrent) | 179 | 91 | 93 |
+| Latency p50 / p95 / p99 | 254 / 558 / 858 ms | 350 / 826 / 5,340 ms | 338 / 797 / 5,324 ms |
+| Settlement: saved by netting | 99.26% | 98.58% | 99.57% |
+
+**What this does NOT prove** (in full in [RESULTS.md](RESULTS.md)):
+
+- **TPS is not a capacity number.** It is 50 waiting clients on one laptop shared with everything else
+  (TPS = concurrency / latency). Chaos latency is mostly the injected delays and the 5 s bank timeout.
+- Correctness only for these seeded runs: other seeds, timings or much higher concurrency were not tested.
+- Only the switch was killed. A bank or Postgres crash, disk loss and real network partitions were not tested.
+- One switch instance ran, so two switches racing on the same payments at this scale was not tested.
+- Nothing about real-world performance: simulated banks, one machine, no TLS, no real bank latency.
+
+## Run it locally
 
 You only need Docker.
 
 ```bash
-docker compose up --build -d
+docker compose up -d --build --wait
 ```
-
-Then open **http://localhost:8000**: the demo UI (below). Everything goes through that one port;
-`docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d` also publishes each
-service's own port (8080 PSP, 8081-8084 banks and switch, 5433 Postgres) for debugging.
-
-Ravi (Bank A, starts with Rs 5,000) pays Rs 200 to Anu's shop (Bank B, starts with Rs 1,000):
-
-```bash
-curl -X POST http://localhost:8000/api/psp/pay -H "Content-Type: application/json" \
-  -d '{"payerVpa":"ravi@banka","payeeVpa":"anu@bankb","amount":"200.00"}'
-```
-
-```json
-{"txnId":"TXN3F2A...","state":"SUCCESS","reason":"CREDIT_OK"}
-```
-
-On Windows PowerShell, use `curl.exe --%` with the JSON quotes escaped:
-
-```powershell
-curl.exe --% -X POST http://localhost:8000/api/psp/pay -H "Content-Type: application/json" -d "{\"payerVpa\":\"ravi@banka\",\"payeeVpa\":\"anu@bankb\",\"amount\":\"200.00\"}"
-```
-
-Look around (balances are in paise):
-
-```bash
-curl http://localhost:8000/api/psp/pay/TXN3F2A...                     # the payment's status
-curl http://localhost:8000/api/switch/txns/TXN3F2A...                # every step, with the reason for each
-curl http://localhost:8000/api/banka/accounts/ravi@banka/balance    # 480000
-curl http://localhost:8000/api/bankb/accounts/anu@bankb/balance     # 120000
-```
-
-Bank C (port 8084) has Kumar (`kumar@bankc`, Rs 4,000) and Priya (`priya@bankc`, Rs 2,500).
-
-Stop with `docker compose down`; `docker compose down -v` also resets every balance (and is needed
-once after upgrading, so Postgres creates the new `bankc` database).
-
-## Chaos mode: make the banks unreliable
-
-All banks run with the `chaos` profile, so `/admin/chaos` exists. Every rate starts at 0.
-
-| Setting | What the bank does to /debit, /credit, /reverse |
-|---|---|
-| `declineRate` | answers DECLINED without doing anything |
-| `errorRate` | answers HTTP 500 without doing anything |
-| `delayMs` | waits this long first |
-| `delayJitterMs` | waits a random extra 0..this many ms (so `delayMs` 0 + jitter 300 = random 0-300 ms) |
-| `dropResponseRate` | **does** the operation, commits it, then stays silent past the switch's timeout |
-| `statusErrorRate` | answers HTTP 500 to `/status-check` |
-| `seed` | repeat the same random decisions every time |
-
-Example: Bank A does every debit but never replies. The payment still ends in `SUCCESS`, about
-5 seconds later: the switch times out, asks Bank A what happened, finds the debit, and carries on.
-
-```bash
-curl -X POST http://localhost:8000/api/banka/admin/chaos -H "Content-Type: application/json" -d '{"dropResponseRate":1.0}'
-curl -X POST http://localhost:8000/api/psp/pay -H "Content-Type: application/json" \
-  -d '{"payerVpa":"ravi@banka","payeeVpa":"anu@bankb","amount":"200.00"}'
-curl -X POST http://localhost:8000/api/banka/admin/chaos -H "Content-Type: application/json" -d '{}'   # chaos off
-```
-
-## Settlement: who pays whom at the end of the day
-
-During the day no real money moves between banks. Each bank only records "I owe the switch"
-or "the switch owes me" in its `SWITCH_SETTLEMENT` account. Periodically the switch closes a
-**settlement cycle** and banks pay only their **net** position (receives minus pays):
-
-| Payments in the cycle | Bank A | Bank B | Bank C |
-|---|---|---|---|
-| A -> B Rs 10,000 | -10,000 | +10,000 | |
-| B -> C Rs 6,000 | | -6,000 | +6,000 |
-| C -> A Rs 4,000 | +4,000 | | -4,000 |
-| **Net position** | **-6,000** | **+4,000** | **+2,000** |
-
-Gross Rs 20,000, but only Rs 6,000 actually moves (70% saved). The positions always sum to zero;
-the switch checks that, and a cycle that does not add up is marked FAILED and never settled.
-
-Only payments that are SUCCESS **and** confirmed by reconciliation join a cycle. DEEMED_APPROVED
-payments and reconciliation exceptions wait for a later cycle.
-
-```bash
-curl -X POST http://localhost:8000/api/switch/admin/settlement/close        # close + settle the open cycle
-curl http://localhost:8000/api/switch/admin/settlement/cycles/1             # items, net positions, gross vs net
-curl http://localhost:8000/api/switch/admin/settlement/central/reserves     # each bank at the central bank
-```
-
-Settling posts one journal entry in the central bank's ledger (same `ledger-core` rules), then
-sends each bank `POST /settlement/advice`, which moves the amount from `SWITCH_SETTLEMENT` to
-its `CENTRAL_BANK_RESERVE`. Every step is idempotent by cycle id.
-
-## The 1 lakh payment chaos test
-
-A load generator sends lakhs of payments through the PSP; a money auditor then reads all four
-databases directly and checks, to the paisa, that nothing was lost. Results: [RESULTS.md](RESULTS.md).
-
-```bash
-mvn -pl load-generator -am install -DskipTests          # builds load-generator/target/*-all.jar
-docker compose down -v
-docker compose -f docker-compose.yml -f docker-compose.dev.yml -f docker-compose.loadtest.yml up --build -d
-java -jar load-generator/target/load-generator-0.1.0-SNAPSHOT-all.jar --count 100000 --concurrency 50      --seed 42 --chaos on --crash-switch-at 50
-```
-
-| Option | Default | |
-|---|---|---|
-| `--count` | 100000 | payments to send |
-| `--concurrency` | 50 | payments in flight at once |
-| `--seed` | 42 | same seed, same payments |
-| `--chaos` | off | on: 5% declines, 3% HTTP 500, 2% dropped answers, 5% failed status checks, 0-300 ms delay, on every bank |
-| `--crash-switch-at` | none | at this % of payments sent: `docker compose kill switch`, 5 s, `docker compose start switch` |
-| `--psp-url` | http://localhost:8080 | |
-| `--audit` | on | off: only send, do not audit |
-| `--report` | | also write the report to this file |
-
-`docker-compose.loadtest.yml` adds 300 customers per bank (`cust001@banka` .. `cust300@bankc`) and
-makes the switch's timers faster so the audit does not wait minutes. The auditor alone, any time:
-
-```bash
-java -cp load-generator/target/load-generator-0.1.0-SNAPSHOT-all.jar com.payswitch.load.audit.MoneyAuditor
-```
-
-A 5,000 payment version runs automatically in `mvn verify` (`LoadChaosIT`), not in `mvn test`.
-
-## Watching it: metrics, dashboard, alerts and one payment's trail
-
-`docker compose up` also starts Prometheus and Grafana, already set up from files in `monitoring/`:
 
 | What | Where |
 |---|---|
-| Grafana dashboard (rows: Overview, Latency, Health, Banks, Money) | http://localhost:8000/grafana/ (admin / admin to edit) |
-| Prometheus, and the three alert rules | http://localhost:9090/alerts (with the dev override from "Run it") |
-| One service's raw metrics | http://localhost:8000/api/switch/actuator/prometheus (also `/api/psp`, `/api/banka`...) |
+| Demo UI | http://localhost:8000 |
+| Admin parts of the UI, `/api/admin/...`, Grafana | "Admin log in" in the UI; locally **admin / admin** |
+| Grafana dashboard | http://localhost:8000/grafana/ |
+| Every service's own port (debugging, load test) | add `-f docker-compose.dev.yml`: PSP 8080, banks 8081/8082/8084, switch 8083, Postgres 5433, Prometheus 9090 |
 
-The metrics. Labels only ever take a few fixed values: never a txnId, VPA or amount.
+The demo: make a payment and watch it move through its states live; run the five scenarios (happy path,
+insufficient funds, lost debit reply, unknown credit, switch crash); as admin, turn on chaos per bank, send
+1,000 random payments, run recon, close settlement, or reseed the demo balances. The TOTAL at the top must
+never change; if it ever does, it flashes red.
 
-| Metric | Type | Labels |
-|---|---|---|
-| `payswitch_payments_total` | counter | `final_state` |
-| `payswitch_bank_call_seconds` | histogram (p50/p95/p99 in Grafana) | `bank`, `op`, `outcome` |
-| `payswitch_txns_in_state`, `payswitch_txns_stuck` | gauge (a DB count every 15 s) | `state` |
-| `payswitch_status_checks_total` | counter | `bank`, `result` |
-| `payswitch_retries_total` | counter | `bank`, `op` |
-| `payswitch_resolver_fixed_total` | counter | `from_state` |
-| `payswitch_recon_items_total` | counter | `category` |
-| `payswitch_settlement_net_amount_paise` | gauge (last settled cycle) | `bank` |
-| `bank_ops_total` | counter | `bank`, `op`, `result` |
-| `bank_idempotent_replays_total`, `bank_fenced_rejections_total` | counter | `bank`, `op` |
-| `bank_chaos_injected_total` | counter | `bank`, `mode` |
-| `psp_requests_total`, `psp_request_seconds` | counter, histogram | `result` |
-
-Alerts: **PaymentsStuck** (any payment stuck for 5 minutes), **ReconExceptions** (any recon item a
-human must look at), **BankUnknownRateHigh** (over 10% of calls to one bank get no clear answer
-for 2 minutes).
-
-Every log line is one JSON object. The PSP makes the txnId and sends it on as the `X-Txn-Id` header;
-the switch passes it to every bank call, and each service puts it into every log line about that
-payment. So one command shows a payment's whole story, from every container, in time order:
+Ravi (Rs 5,000) pays Anu's shop (Rs 1,000) Rs 200 from the command line:
 
 ```bash
-scripts/trace.sh TXN3F2A...          # add --raw for the JSON lines
+curl -X POST http://localhost:8000/api/psp/pay -H "Content-Type: application/json" \
+  -d '{"payerVpa":"ravi@banka","payeeVpa":"anu@bankb","amount":"200.00"}'
+curl http://localhost:8000/api/switch/txns/TXN...                         # every step, with its reason
+curl -u admin:admin http://localhost:8000/api/admin/banka/accounts/ravi@banka/balance   # 480000 (paise)
 ```
 
-```
-03:13:01.3717434  switch-service          INFO   INITIATED        Txn TXNF607...: created, BANKC -> BANKA
-03:13:01.5290918  bank-service-BANKC      INFO                    DEBIT TXNF607...: SUCCESS
-03:13:01.8571167  bank-service-BANKA      WARN                    CHAOS CREDIT TXNF607...: answering HTTP 500, nothing processed
-03:13:01.8623188  switch-service          WARN   CREDIT_SENT      BANKA CREDIT TXNF607... -> UNKNOWN (HTTP 500)
-03:13:01.9162420  bank-service-BANKA      INFO                    STATUS-CHECK CREDIT TXNF607...: no record, FENCED now
-03:13:01.9340175  switch-service          INFO   REVERSAL_SENT    Txn TXNF607...: CREDIT_SENT -> REVERSAL_SENT (CREDIT_DECLINED:FENCED)
-03:13:03.4214286  bank-service-BANKC      INFO                    REVERSE TXNF607...: SUCCESS
-03:13:03.4404116  switch-service          INFO   REVERSED         Txn TXNF607...: REVERSAL_SENT -> REVERSED (REVERSAL_OK)
-03:13:03.4536269  psp-service             INFO                    Txn TXNF607...: switch answered REVERSED (REVERSAL_OK)
-```
-
-## The demo UI
-
-http://localhost:8000, one plain HTML/CSS/JS page (`web/html`), served by an nginx gateway (`web/nginx.conf`)
-that is also the only way in: `/api/psp`, `/api/switch`, `/api/banka|bankb|bankc`, `/grafana`.
-
-| Section | What it shows |
-|---|---|
-| TOTAL MONEY | customer money + money in transit, from `GET /api/switch/admin/money-summary` every second. It must never change; if it does, it flashes red. |
-| Make a payment | a payment between the six seeded customers, through the PSP |
-| Live monitor | the latest 50 payments; each state change appears live (Server-Sent Events, `GET /api/switch/events/txns`). Select a row for its full history. |
-| Scenarios | happy, insufficient funds, debit reply lost, credit unknown (DEEMED_APPROVED, then recon), switch crash (the switch really dies; Docker restarts it) |
-| Chaos | per-bank sliders for declines, HTTP 500s, dropped replies, failing status checks and delay |
-| Load | 1,000 random payments in the background, with live counters |
-| Admin | run recon, close settlement, the last settlement's net positions, money per bank, payments per state |
-
-The demo stack uses quicker switch timings than the defaults (recon cutoff 10 s, stuck payments
-picked up after 10 s) so scenarios finish while you watch; see `docker-compose.yml`.
-
-Check the gateway end to end (UI, every API route, the live stream):
+Check the gateway end to end (headers, public vs admin routes, size and rate limits, the live stream):
 
 ```bash
 scripts/smoke-gateway.sh
 ```
 
-## Design decisions
+Other tools: `scripts/trace.sh TXN...` shows one payment's log lines from every container in time order;
+the 1 lakh load test and the auditor are described in [RESULTS.md](RESULTS.md) and run with
+`docker compose -f docker-compose.yml -f docker-compose.dev.yml -f docker-compose.loadtest.yml up --build -d`
+then `java -jar load-generator/target/load-generator-0.1.0-SNAPSHOT-all.jar --count 100000 --chaos on`.
 
-| Decision | Why |
+Stop with `docker compose down` (data kept) or `docker compose down -v` (balances reset).
+
+**Deploying the public demo:** production images, limits and secrets are in `docker-compose.prod.yml` and
+`.env.example`; step-by-step server setup with HTTPS is in [DEPLOY.md](DEPLOY.md).
+
+## The public demo's protections
+
+| Risk | Protection |
 |---|---|
-| Money is `long` paise; rupees only at the PSP, with `BigDecimal` | `double` cannot hold most decimal amounts exactly. A decimal amount anywhere else is refused. |
-| Double-entry ledger: every entry's lines sum to zero | Money can only move, never appear or vanish, and an audit query can prove it. |
-| Every bank operation is idempotent by (txnId, operation) | Retries are unavoidable on a network; they must never debit or credit twice. |
-| Claim, money and saved answer in ONE database transaction | A crash between them can never leave "money moved but no record", or the reverse. |
-| `SELECT ... FOR UPDATE` on account rows, locked in id order | Stops lost updates; one fixed lock order makes deadlocks impossible. |
-| A per-txnId advisory lock in the bank | A late request and a status check or reversal for the same txnId can never interleave. |
-| Payment = state machine; every change is an audit-trail row | Illegal moves are impossible, and every payment's history can be read back step by step. |
-| Optimistic locking (`version`) in the switch | The switch waits seconds for banks; holding a database lock that long would block everyone. |
-| State saved BEFORE each bank call | After a crash, the saved state says which bank to ask about what. |
-| Every bank answer is SUCCESS, DECLINED or UNKNOWN, decided in one class | A timeout is not a failure. Only a clear answer from the bank counts. |
-| Status check with fencing | "No record" becomes a promise the request will never run later, so FAILED is safe to say. |
-| Unknown debit, so reverse; unknown credit, so never reverse (DEEMED_APPROVED) | Reversing a debit is safe either way; reversing a credit that did happen would create money. |
-| Retries with exponential backoff and jitter | Gives a struggling bank room to recover, and spreads retries so they do not all land at once. |
-| Background resolver with `FOR UPDATE SKIP LOCKED` and a lease | Many copies of the switch can run it at once without ever handling the same payment twice. |
-| The money auditor reads the databases with SQL, not the services' APIs | An auditor must not trust the code it audits. |
-| Metric labels are fixed small sets (state, bank, op), never a txnId | Every label combination is a separate time series; one per payment would sink Prometheus. Find one payment in the logs instead. |
-| Counters for final states are bumped only after the database commit | A rolled-back state change must not be counted. |
-| The txnId travels as a header and sits in the MDC, set and cleared by a filter | Every log line about a payment can be found by its id, and a reused thread never logs the previous request's id. |
-| Live events are published AFTER the database commit | A browser must never show a state that later rolls back. |
-| Server-Sent Events, batched every 200 ms | One-way server-to-browser is all the monitor needs; batching keeps 200 payments/s to 5 messages/s per browser. |
-| One gateway (nginx) in front of everything | One origin for the browser (no CORS), one port to expose, internal services stay private. |
-| Multilateral net settlement of reconciled payments only | Far less money moves between banks, and nothing is settled that the banks' own books do not confirm. |
+| Someone calls a bank's `/credit` directly | Not routed: only an allow-list of public URLs exists at the gateway; everything else is 404 |
+| Someone changes chaos, runs load, recon or settlement | All under `/api/admin/` and `/grafana/`, behind HTTP basic auth (password from `.env`) |
+| Floods | Per-address rate limits: `/pay` 10 per minute (burst 5), scenarios 4 per minute, at most 4 live streams; 16 KB request limit; short client timeouts |
+| The crash scenario restarts the switch for everyone | Limited to once a minute in total, and only the scenario's own payment can trigger it |
+| Two visitors' scenarios fight over the same chaos settings | One scenario at a time (others get "busy, try again in a few seconds"); each scenario takes back the chaos it set up |
+| Chaos left on spoils the demo | Every bank's chaos switches itself off 5 minutes after the last change |
+| The demo customers run out of money | A nightly reseed (and an admin button) moves money back between the six customers with ordinary payments. No money is added, so TOTAL does not change. |
+| Script injection, framing | Strict Content-Security-Policy (only our own scripts), `X-Frame-Options: DENY`, `nosniff`; the UI escapes all text |
+| Ports left open | Postgres, Prometheus and the services publish no ports; the gateway listens on 127.0.0.1 behind the HTTPS proxy |
 
-## Tests
+## Project structure
 
-```bash
-mvn test
+```
+common/            DTOs shared by the services (requests, responses, enums)
+ledger-core/       double-entry rules, pure Java (no Spring, no database)
+observability/     txnId filter, X-Txn-Id header interceptor, log context
+bank-service/      the bank (run 3 times): ledger, idempotent operations, status check + fencing, chaos, recon feed
+switch-service/    state machine, payment flow, resolver, recon, settlement, live events, demo scenarios
+psp-service/       the payer's app backend: rupees -> paise, txnId, the demo's bulk load
+load-generator/    the 1 lakh payment load test and the money auditor
+e2e-tests/         the whole system in one JVM over real HTTP
+web/               nginx gateway config + the plain HTML/CSS/JS demo UI
+monitoring/        Prometheus config and alerts, Grafana provisioning and dashboard
+scripts/           smoke-gateway.sh, trace.sh
+Dockerfile         one production image definition for every Java service
+docker-compose*.yml  local stack, dev ports, load test, production
 ```
 
-Needs Docker: the tests start a real PostgreSQL with Testcontainers. `mvn verify` also runs the
-5,000 payment chaos test (about 2 minutes). Coverage reports are written
-to each module's `target/site/jacoco/index.html`.
+## What I would do next
+
+- **Keyset pagination for recon.** Recon over about 1 lakh payments takes about 4.5 minutes, mostly the banks
+  paging with `OFFSET` (a known limitation in RESULTS.md).
+- **Let the scheduled recon catch up windows it missed.** It runs with a fixed delay, so a slow run can push
+  the next one past a window boundary and that window is never reconciled by the timer.
+- **Run two switch instances.** The resolver already uses `SKIP LOCKED` and leases; the live stream and the demo
+  lock would need Postgres `LISTEN/NOTIFY` (or Redis) and an advisory lock.
+- **Crash a bank and Postgres, not only the switch**, and test with real network faults (e.g. Toxiproxy).
+- **A transactional outbox** for events that must not be lost on a crash (the live view is best-effort today).
+- **TLS and service-to-service authentication** inside the Docker network.

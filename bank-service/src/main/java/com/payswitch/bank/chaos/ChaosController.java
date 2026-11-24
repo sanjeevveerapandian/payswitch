@@ -2,6 +2,8 @@ package com.payswitch.bank.chaos;
 
 import java.util.Map;
 import org.springframework.context.annotation.Profile;
+import org.springframework.web.bind.annotation.DeleteMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -42,6 +44,13 @@ public class ChaosController {
     @PostMapping("/once")
     public Map<String, ChaosDecision> once(@RequestBody Once request) {
         chaos.armOnce(request.op(), request.mode());
+        return chaos.pendingOnce();
+    }
+
+    /** DELETE /admin/chaos/once/DEBIT: take back an unused one-shot rule. Answers what is still armed. */
+    @DeleteMapping("/once/{op}")
+    public Map<String, ChaosDecision> disarm(@PathVariable String op) {
+        chaos.disarmOnce(op);
         return chaos.pendingOnce();
     }
 

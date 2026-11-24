@@ -17,6 +17,12 @@
     </div>
   </div>
 
+  <div class="admin-box">
+    <button type="button" id="admin-login" class="secondary on-dark">Admin log in</button>
+    <span id="admin-status" class="admin-status" hidden>Admin
+      <button type="button" id="admin-hide" class="link on-dark">hide</button></span>
+  </div>
+
   <section class="money" aria-labelledby="total-label">
     <p id="total-label" class="money-label">Total money in the system</p>
     <p id="total" class="total" aria-live="polite">loading...</p>
@@ -52,21 +58,31 @@
 
     <section class="card" aria-labelledby="scen-h">
       <h2 id="scen-h">Scenarios</h2>
-      <p class="hint">Each button sets up one failure and makes one real payment through the normal code.</p>
+      <p class="hint">Each button sets up one failure and makes one real payment through the normal code.
+        One scenario runs at a time for everyone; if someone else's is running, try again in a few seconds.</p>
       <ul id="scenarios" class="scenarios"></ul>
       <div id="scenario-result" class="result" aria-live="polite"></div>
     </section>
 
-    <section class="card" aria-labelledby="chaos-h">
+    <section class="card" aria-labelledby="money-h">
+      <h2 id="money-h">Where the money is</h2>
+      <p class="hint">Customer money at each bank, and money in transit between them. The total never changes.</p>
+      <div id="banks"></div>
+      <h3>Payments by state</h3>
+      <div id="states" class="chips"></div>
+    </section>
+
+    <section class="card" aria-labelledby="chaos-h" data-admin hidden>
       <div class="card-head">
         <h2 id="chaos-h">Chaos</h2>
         <button type="button" id="chaos-reset" class="secondary">Reset all chaos</button>
       </div>
-      <p class="hint">Make each bank unreliable on purpose. Applies to every payment until reset.</p>
+      <p class="hint">Make each bank unreliable on purpose. Applies to every payment, and switches itself
+        off 5 minutes after the last change.</p>
       <div id="chaos" class="chaos"></div>
     </section>
 
-    <section class="card" aria-labelledby="load-h">
+    <section class="card" aria-labelledby="load-h" data-admin hidden>
       <h2 id="load-h">Load</h2>
       <div class="row">
         <button type="button" id="load-start" class="primary">Run 1,000 payments</button>
@@ -76,19 +92,18 @@
       <div id="load-counts" class="chips"></div>
     </section>
 
-    <section class="card" aria-labelledby="admin-h">
+    <section class="card" aria-labelledby="admin-h" data-admin hidden>
       <h2 id="admin-h">Admin</h2>
       <div class="row">
         <button type="button" id="recon-run" class="secondary">Run recon</button>
         <button type="button" id="settle" class="secondary">Close settlement</button>
+        <button type="button" id="reseed" class="secondary">Reseed demo balances</button>
       </div>
+      <p class="hint">Reseed puts the six customers back to their starting balances with ordinary payments
+        between them: no money is added. It also runs every night at 03:30 IST.</p>
       <div id="admin-result" class="result" aria-live="polite"></div>
       <h3>Last settlement</h3>
       <div id="settlement"></div>
-      <h3>Per bank</h3>
-      <div id="banks"></div>
-      <h3>Payments by state</h3>
-      <div id="states" class="chips"></div>
     </section>
   </div>
 
@@ -106,8 +121,8 @@
 </main>
 
 <footer class="foot">
-  <p>PaySwitch is a learning project. Not affiliated with NPCI, UPI or any bank.
-     <a href="/grafana/">Grafana dashboard</a></p>
+  <p>PaySwitch is a learning project and a simulator: no real money moves. Not affiliated with NPCI or any bank.
+     <a href="/grafana/" data-admin hidden>Grafana dashboard</a></p>
 </footer>
 
 <dialog id="details" aria-labelledby="details-h">

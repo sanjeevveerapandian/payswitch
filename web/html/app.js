@@ -1,5 +1,6 @@
 // PaySwitch demo UI. Plain JavaScript, no framework, no build step.
-// Every call goes through the gateway: /api/psp, /api/switch, /api/banka|bankb|bankc.
+// Every call goes through the gateway. Public calls: /api/psp/pay, /api/switch/... (see web/nginx.conf).
+// Admin calls: /api/admin/{psp|switch|banka|bankb|bankc}/..., behind the gateway's admin password.
 'use strict';
 
 const USERS = [
@@ -278,7 +279,7 @@ async function runScenario(name) {
   try {
     const r = await api('POST', `/api/switch/admin/scenario/${name}`);
     out.innerHTML = `<p>${pill(r.state)} ${esc(r.reason || '')} ${txnLink(r.txnId)}</p><p>${esc(r.explanation)}</p>`
-      + (name === 'credit-unknown-deemed'
+      + (name === 'credit-unknown-deemed' && isAdmin
         ? '<button type="button" class="primary" id="scenario-recon">Run recon now</button>' : '');
     const recon = $('#scenario-recon');
     if (recon) recon.onclick = () => runRecon(out);
@@ -311,7 +312,7 @@ async function loadChaos() {
   for (const bank of BANKS) {
     let s;
     try {
-      s = await api('GET', `/api/${bank.code}/admin/chaos`);
+      s = await api('GET', `/api/admin/${bank.code}/admin/chaos`);
     } catch (e) {
       box.insertAdjacentHTML('beforeend', `<div class="bank"><h3>${bank.name}</h3><p class="error">${esc(e.message)}</p></div>`);
       continue;
@@ -340,11 +341,11 @@ $('#chaos').addEventListener('input', ev => {
   chaosState[bank] = { ...chaosState[bank], [key]: value };
   clearTimeout(chaosTimers[bank]);
   // Send once the slider stops moving, not on every pixel.
-  chaosTimers[bank] = setTimeout(() => api('POST', `/api/${bank}/admin/chaos`, chaosState[bank]).catch(e => alert(e.message)), 300);
+  chaosTimers[bank] = setTimeout(() => api('POST', `/api/admin/${bank}/admin/chaos`, chaosState[bank]).catch(e => alert(e.message)), 300);
 });
 
 $('#chaos-reset').addEventListener('click', async () => {
-  await Promise.all(BANKS.map(b => api('POST', `/api/${b.code}/admin/chaos`, {}).catch(() => null)));
+  await Promise.all(BANKS.map(b => api('POST', `/api/admin/${b.code}/admin/chaos`, {}).catch(() => null)));
   await loadChaos();
 });
 
@@ -354,7 +355,7 @@ let loadTimer = null;
 
 async function refreshLoad() {
   try {
-    const s = await api('GET', '/api/psp/admin/load');
+    const s = await api('GET', '/api/admin/psp/admin/load');
     const bar = $('#load-progress');
     bar.max = Math.max(1, s.requested);
     bar.value = s.done;
@@ -371,7 +372,7 @@ async function refreshLoad() {
 
 $('#load-start').addEventListener('click', async () => {
   try {
-    await api('POST', '/api/psp/admin/load?count=1000');
+    await api('POST', '/api/admin/psp/admin/load?count=1000');
   } catch (e) {
     if (e.status !== 409) { $('#load-progress-text').textContent = e.message; return; }
   }
@@ -386,7 +387,7 @@ async function runRecon(out = $('#admin-result')) {
   const to = new Date();
   const from = new Date(to.getTime() - 24 * 3600 * 1000);
   try {
-    const r = await api('POST', `/api/switch/admin/recon/run?from=${from.toISOString()}&to=${to.toISOString()}`);
+    const r = await api('POST', `/api/admin/switch/admin/recon/run?from=${from.toISOString()}&to=${to.toISOString()}`);
     out.innerHTML = `<p>Recon run ${r.runId}: <strong>${esc(r.status)}</strong></p><div class="chips">${
       Object.entries(r.counts || {}).filter(([, n]) => n > 0)
         .map(([c, n]) => `<span class="chip">${esc(c)} <strong>${n}</strong></span>`).join('')
@@ -413,7 +414,7 @@ $('#settle').addEventListener('click', async () => {
   const out = $('#admin-result');
   out.textContent = 'Closing and settling the open cycle...';
   try {
-    const r = await api('POST', '/api/switch/admin/settlement/close');
+    const r = await api('POST', '/api/admin/switch/admin/settlement/close');
     out.innerHTML = `<p>Cycle ${r.cycleId}: ${pill(r.status)}${r.failureReason ? ' ' + esc(r.failureReason) : ''}</p>`;
     if (r.status === 'SETTLED') renderSettlement(r);
   } catch (e) {
@@ -423,12 +424,61 @@ $('#settle').addEventListener('click', async () => {
 
 async function loadLastSettlement() {
   try {
-    renderSettlement(await api('GET', '/api/switch/admin/settlement/last'));
+    renderSettlement(await api('GET', '/api/admin/switch/admin/settlement/last'));
   } catch (e) {
     renderSettlement(e.status === 404 ? null : undefined);
     if (e.status !== 404) $('#settlement').innerHTML = `<p class="error">${esc(e.message)}</p>`;
   }
 }
+
+$('#reseed').addEventListener('click', async () => {
+  const out = $('#admin-result');
+  out.textContent = 'Reseeding: paying money back between the demo customers...';
+  try {
+    const r = await api('POST', '/api/admin/switch/admin/demo/reseed');
+    out.innerHTML = r.payments.length
+      ? `<p>${r.payments.length} payment${r.payments.length === 1 ? '' : 's'}:</p><ul>${
+          r.payments.map(p => `<li>${esc(p.from)} &rarr; ${esc(p.to)} ${rs(p.amount)} ${pill(p.state)}</li>`).join('')}</ul>`
+      : '<p>Everyone already has their starting balance. Nothing to do.</p>';
+  } catch (e) {
+    out.innerHTML = `<p class="error">${esc(e.message)}</p>`;
+  }
+});
+
+// ---- 8. Admin log in -----------------------------------------------------------------------
+// HTTP basic auth, done by the BROWSER: the first request to /api/admin/login gets 401, the browser
+// shows its own login box, and from then on sends the password by itself with every /api/admin/
+// request until the browser is closed. This page never sees or stores the password; it only
+// remembers (per tab) that the admin parts should be shown.
+
+let isAdmin = false;
+
+function showAdmin(on) {
+  isAdmin = on;
+  document.querySelectorAll('[data-admin]').forEach(el => { el.hidden = !on; });
+  $('#admin-login').hidden = on;
+  $('#admin-status').hidden = !on;
+  try { on ? sessionStorage.setItem('admin', '1') : sessionStorage.removeItem('admin'); } catch { /* storage off */ }
+  if (on) {
+    loadChaos();
+    refreshLoad();
+    loadLastSettlement();
+  }
+}
+
+async function adminLogin() {
+  try {
+    const res = await fetch('/api/admin/login', { cache: 'no-store' });
+    showAdmin(res.ok);
+    if (!res.ok) $('#scenario-result').innerHTML = '<p class="error">Admin log in failed or was cancelled.</p>';
+  } catch {
+    showAdmin(false);
+  }
+}
+
+$('#admin-login').addEventListener('click', adminLogin);
+// Hides the admin parts. The browser keeps the password until it is closed (basic auth has no log out).
+$('#admin-hide').addEventListener('click', () => showAdmin(false));
 
 // ---- start ---------------------------------------------------------------------------------
 
@@ -437,6 +487,6 @@ fillScenarios();
 connectLive();
 refreshMoney();
 setInterval(refreshMoney, 1000);
-loadChaos();
-refreshLoad();
-loadLastSettlement();
+let rememberedAdmin = false;
+try { rememberedAdmin = sessionStorage.getItem('admin') === '1'; } catch { /* storage off */ }
+if (rememberedAdmin) adminLogin();          // this tab logged in before a reload
